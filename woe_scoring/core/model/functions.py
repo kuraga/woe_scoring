@@ -385,7 +385,7 @@ def _calc_stats_for_feature(
                     result_dict["percent_of_population"].append(bin_info["pct"])
                     result_dict["total"].append(bin_info["total"])
                     result_dict["event_cnt"].append(bin_info["bad"])
-                    result_dict["non_event_cnt"].append(bin_info["good"])
+                    result_dict["non_event_cnt"].append(bin_info["total"] - bin_info["bad"])
                     result_dict["event_rate"].append(bin_info["bad_rate"])
                     result_dict["score_ball"].append(
                         _calc_score_points(
@@ -433,10 +433,10 @@ def _calc_stats(
     Returns:
         Stats."""
 
-    return Parallel(n_jobs=-1, backend="multiprocessing")(
+    return Parallel(n_jobs=-1, backend="threading")(
         delayed(_calc_stats_for_feature)(
             idx, feature, feature_names, encoder, model_results, factor, offset
-        ).rename(feature.replace("WOE_", ""))
+        )
         for idx, feature in enumerate(model_results.iloc[:, 0])
     )
 
@@ -449,7 +449,7 @@ def _build_excel_sheet_with_charts(
         first_plot_position: str = 'A',
         second_plot_position: str = "J",
 ) -> None:
-    """Build excel sheet with charts.
+    """Build Excel sheet with charts.
     Args:
         feature_stats: Feature stats.
         writer: Writer.
@@ -460,9 +460,7 @@ def _build_excel_sheet_with_charts(
     Returns:
         None."""
 
-    # Get workbook link
     workbook = writer.book
-    # Create merge format
     merge_format = workbook.add_format(
         {
             'bold': 1,
@@ -471,8 +469,8 @@ def _build_excel_sheet_with_charts(
             'valign': 'vcenter'
         }
     )
-    const = [result for result in feature_stats if result.name == 'const']
-    iterator = [result for result in feature_stats if ((result is not None) and (result.name != 'const'))]
+    const = [result for result in feature_stats if result['feature'][0] == 'const']
+    iterator = [result for result in feature_stats if ((result is not None) and (result['feature'][0] != 'const'))]
     scorecard_iterator = [*const, *iterator]
     indexes = np.cumsum([len(result) for result in scorecard_iterator])
     full_features = pd.concat(tuple(scorecard_iterator), ignore_index=True)
@@ -486,21 +484,16 @@ def _build_excel_sheet_with_charts(
         area_start = index + 1
 
     for result in iterator:
-        # Get dimensions of result Excel sheet and column indexes
         max_row = len(result)
         event_cnt = result.columns.get_loc('event_cnt') + 1
         non_event_cnt = result.columns.get_loc('non_event_cnt') + 1
         score_ball = result.columns.get_loc('score_ball') + 1
         woe = result.columns.get_loc('WOE') + 1
         event_rate = result.columns.get_loc('event_rate') + 1
-        # Set sheet name, transfer data to sheet
-        sheet_name = result.name
+        sheet_name = result['feature'][0]
         result.to_excel(writer, sheet_name=sheet_name)
-        # Get worksheet link
         worksheet = writer.sheets[sheet_name]
-        # Create stacked column chart
         chart_events = workbook.add_chart({'type': 'column', 'subtype': 'stacked'})
-        # Add event and non-event counts to chart
         chart_events.add_series(
             {
                 'name': 'event_cnt ',
@@ -513,7 +506,6 @@ def _build_excel_sheet_with_charts(
                 'values': [sheet_name, 1, non_event_cnt, max_row, non_event_cnt]
             }
         )
-        # Create separate line chart for combination
         woe_line = workbook.add_chart({'type': 'line'})
         woe_line.add_series(
             {
@@ -523,9 +515,7 @@ def _build_excel_sheet_with_charts(
                 'y2_axis': True,
             }
         )
-        # Combine charts
         chart_events.combine(woe_line)
-        # Create column chart for score_ball
         chart_score_ball = workbook.add_chart({'type': 'column'})
         chart_score_ball.add_series(
             {
@@ -533,7 +523,6 @@ def _build_excel_sheet_with_charts(
                 'values': [sheet_name, 1, score_ball, max_row, score_ball]
             }
         )
-        # Create separate line chart for combination
         event_rate_line = workbook.add_chart({'type': 'line'})
         event_rate_line.add_series(
             {
@@ -543,21 +532,17 @@ def _build_excel_sheet_with_charts(
                 'y2_axis': True,
             }
         )
-        # Combine charts
         chart_score_ball.combine(event_rate_line)
-        # Change size and legend of charts
         chart_events.set_size({'width': width, 'height': height})
         chart_events.set_legend({'position': 'bottom'})
         chart_score_ball.set_size({'width': width, 'height': height})
         chart_score_ball.set_legend({'position': 'bottom'})
-        # Merge first 3 columns
         worksheet.merge_range(1, 1, max_row, 1, result.iloc[1, 0], merge_format)
         worksheet.set_column(1, 1, 20)
         worksheet.merge_range(1, 2, max_row, 2, result.iloc[1, 1], merge_format)
         worksheet.set_column(2, 2, 10)
         worksheet.merge_range(1, 3, max_row, 3, result.iloc[1, 2], merge_format)
         worksheet.set_column(3, 3, 10)
-        # Insert charts
         worksheet.insert_chart(f'{first_plot_position}{max_row + 3}', chart_events)
         worksheet.insert_chart(f'{second_plot_position}{max_row + 3}', chart_score_ball)
 
@@ -603,3 +588,22 @@ def save_scorecard_fn(
         writer.save()
     except Exception as e:
         print(f"Problem with saving: {e}")
+
+
+def _calc_model_results_table(model: Model) -> pd.DataFrame:
+    res_dict = {
+        'index': [],
+        'coef': [],
+        'P>|z|': []
+    }
+
+    res_dict['index'].append('const')
+    res_dict['coef'].append(model.intercept_)
+    res_dict['P>|z|'].append(0)
+
+    for i in range(len(model.feature_names_)):
+        res_dict['index'].append(model.feature_names_[i][4:])
+        res_dict['coef'].append(model.coef_[i])
+        res_dict['P>|z|'].append(model.pvalues_[i])
+
+    return pd.DataFrame.from_dict(res_dict).reset_index(drop=True)

@@ -106,6 +106,7 @@ class Model:
         self.feature_names_ = List[str]
         self.model_score_ = float
         self.pvalues_ = List[float]
+        self.model_results = None
 
     def get_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> callable:
         """
