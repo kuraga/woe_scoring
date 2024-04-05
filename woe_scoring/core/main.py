@@ -9,8 +9,9 @@ from sklearn.utils.multiclass import unique_labels
 
 from .binning.functions import (cat_processing, find_cat_features,
                                 num_processing, prepare_data, refit)
-from .model.functions import (calc_features_gini_quality, check_correlation_threshold, check_features_gini_threshold,
-                              check_min_pct_group, find_bad_features, generate_sql, save_reports, save_scorecard_fn)
+from .model.functions import (_calc_model_results_table, calc_features_gini_quality, check_correlation_threshold,
+                              check_features_gini_threshold, check_min_pct_group, find_bad_features, generate_sql,
+                              save_reports, save_scorecard_fn)
 from .model.model import Model
 from .model.selector import FeatureSelector
 
@@ -397,6 +398,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
         self.feature_names_ = selected_model.feature_names_
         self.model_score_ = selected_model.model_score_
         self.pvalues_ = selected_model.pvalues_
+        self.model_results = _calc_model_results_table(selected_model)
 
         return self.model
 
