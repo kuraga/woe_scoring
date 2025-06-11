@@ -228,9 +228,15 @@ def _bin_bad_rates(x: np.ndarray, y: np.ndarray, bins: List,
     )
 
 
-def _calc_max_bins(bins: List, max_bins: float) -> int:
-    """Calculate maximum number of bins"""
-    return max(int(len(bins) * max_bins), 2)
+def _calc_max_bins(bins: List, max_bins_percentage: float) -> int: # Renamed max_bins to max_bins_percentage
+    """Calculate maximum number of bins based on a percentage of current bins, with a minimum fallback."""
+    if not isinstance(bins, list):
+        # Log: print("Warning: 'bins' argument to _calc_max_bins was not a list. Returning MIN_BINS_FALLBACK.")
+        return MIN_BINS_FALLBACK
+    if not isinstance(max_bins_percentage, float) or not (0.0 < max_bins_percentage <= 1.0) :
+        # Log: print(f"Warning: max_bins_percentage '{max_bins_percentage}' is not a float strictly between 0 and 1. Defaulting to MIN_BINS_FALLBACK.")
+        return MIN_BINS_FALLBACK
+    return max(int(len(bins) * max_bins_percentage), MIN_BINS_FALLBACK)
 
 
 def prepare_data(data: pd.DataFrame,
@@ -249,15 +255,36 @@ def prepare_data(data: pd.DataFrame,
 def find_cat_features(x: pd.DataFrame,
                      feature_names: List[str],
                      cat_features_threshold: int) -> List[str]:
-    """Find categorical features"""
-    is_categorical = [
-        np.issubdtype(x.dtypes[i], np.object_) or
-        np.issubdtype(x.dtypes[i], np.floating) or
-        len(pd.unique(x.iloc[:, i].astype(str))) < cat_features_threshold
-        for i in range(len(feature_names))
-    ]
+    """Find categorical features based on dtype and unique value count."""
+    if not isinstance(x, pd.DataFrame):
+        raise TypeError("Input 'x' must be a pandas DataFrame.")
+    if not isinstance(feature_names, list):
+        raise TypeError("Input 'feature_names' must be a list.")
+    if not isinstance(cat_features_threshold, int) or cat_features_threshold < 0:
+        raise ValueError("cat_features_threshold must be a non-negative integer.")
 
-    return [f for f, is_cat in zip(feature_names, is_categorical) if is_cat]
+    if not feature_names or x.empty:
+        return []
+
+    categorical_found = []
+    for feature_name in feature_names:
+        if feature_name not in x.columns:
+            # Log: print(f"Warning: Feature '{feature_name}' not found in DataFrame columns during categorical check.")
+            continue
+
+        col_dtype = x[feature_name].dtype
+        is_object_dtype = np.issubdtype(col_dtype, np.object_)
+
+        try:
+            num_unique_values = len(pd.unique(x[feature_name].dropna().astype(str)))
+        except Exception as e:
+            # Log: print(f"Warning: Could not determine unique values for feature {feature_name}: {e}. Assuming not categorical by unique count.")
+            num_unique_values = cat_features_threshold + 1
+
+        if is_object_dtype or (num_unique_values < cat_features_threshold):
+            categorical_found.append(feature_name)
+
+    return categorical_found
 
 
 def _cat_binning(x: np.ndarray, y: np.ndarray,
