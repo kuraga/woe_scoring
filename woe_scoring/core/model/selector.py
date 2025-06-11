@@ -9,7 +9,8 @@ from sklearn.feature_selection import RFECV, SequentialFeatureSelector
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import l1_min_c
 
-from .functions import calc_iv_dict
+# Updated import for calculate_iv_for_feature
+from .feature_analyzer import calculate_iv_for_feature
 
 
 @dataclass
@@ -84,7 +85,8 @@ class FeatureSelector:
         """Selects top features based on Information Value (IV) score."""
         iv_dict: Dict[str, float] = {}
         for feature_name in feature_names:
-            iv_dict.update(calc_iv_dict(data, target, feature_name))
+            # Updated function call
+            iv_dict.update(calculate_iv_for_feature(data, target, feature_name))
 
         sorted_features = sorted(iv_dict.items(), key=itemgetter(1), reverse=True)
         return [f for f, iv in sorted_features if iv >= self.iv_threshold][:self.max_vars]
