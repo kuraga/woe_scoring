@@ -15,6 +15,8 @@ from .model import model_analyzer # New module for save_reports
 from .model import sql_generator  # New module for generate_sql
 
 from .model.model import Model
+import logging # Add logging import
+
 from .model.selector import FeatureSelector
 
 
@@ -59,6 +61,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         self.woe_iv_dict: List = [] # List of dictionaries
         self.feature_names: List[str] = []
         self.num_features: List[str] = []
+        self.logger = logging.getLogger(__name__) # Initialize logger
 
         # Basic parameter validation
         if not (0 < min_pct_group < 1):
@@ -84,7 +87,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             raise TypeError(f"Error in prepare_data: {e}") from e
 
         if not self.feature_names:
-            # Log: print("Warning: No features to process after prepare_data.")
+            self.logger.warning("No features to process after prepare_data.")
             self.woe_iv_dict = []
             return self
 
@@ -135,14 +138,14 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 raise RuntimeError(f"Error processing numerical features: {e}") from e
 
         if not self.woe_iv_dict:
-            # Log: print("Warning: WOE dictionary is empty after processing all features.")
+            self.logger.warning("WOE dictionary is empty after processing all features.")
             pass
 
 
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """Transform data using WOE encoding"""
         if not self.woe_iv_dict:
-            # Log: print("Warning: WOE dictionary is empty. Returning original data or empty if no original data was to be kept.")
+            self.logger.warning("WOE dictionary is empty. Returning original data or empty if no original data was to be kept.")
             # Depending on safe_original_data, this might return an empty DataFrame if no features are transformed.
             if self.safe_original_data:
                 return data.copy()
@@ -159,7 +162,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
 
         for woe_ruleset_for_feature in self.woe_iv_dict:
             if not isinstance(woe_ruleset_for_feature, dict) or not woe_ruleset_for_feature:
-                # Log: print(f"Warning: Invalid item in woe_iv_dict: {woe_ruleset_for_feature}. Skipping.")
+                self.logger.warning(f"Invalid item in woe_iv_dict: {woe_ruleset_for_feature}. Skipping.")
                 continue
 
             # Assuming the first key is the feature name, as per binning_functions structure
@@ -167,10 +170,10 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 original_feature_name = next(iter(woe_ruleset_for_feature))
                 # Ensure the feature name from woe_dict is actually a string (original key)
                 if not isinstance(original_feature_name, str):
-                    # Log: print(f"Warning: Invalid feature name key in woe_dict: {original_feature_name}. Skipping.")
+                    self.logger.warning(f"Invalid feature name key in woe_dict: {original_feature_name}. Skipping.")
                     continue
             except StopIteration: # woe_ruleset_for_feature is empty
-                # Log: print(f"Warning: Empty dictionary found in woe_iv_dict. Skipping.")
+                self.logger.warning("Empty dictionary found in woe_iv_dict. Skipping.")
                 continue
 
             woe_bins_for_feature = woe_ruleset_for_feature.get(original_feature_name)
@@ -178,7 +181,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             # missing_bin_strat = woe_ruleset_for_feature.get("missing_bin")
 
             if not isinstance(woe_bins_for_feature, list): # Bins should be a list of dicts
-                # Log: print(f"Warning: WOE info for feature '{original_feature_name}' is not a list. Skipping.")
+                self.logger.warning(f"WOE info for feature '{original_feature_name}' is not a list. Skipping.")
                 continue
 
             new_woe_col_name = f"{self.prefix}{original_feature_name}"
@@ -208,96 +211,127 @@ class WOETransformer(BaseEstimator, TransformerMixin):
 
     def _apply_woe_transform(self, data_df: pd.DataFrame, original_feature_name: str,
                            new_woe_col_name: str, woe_bins_list: List[Dict],
-                           feature_woe_rules: Dict) -> None: # feature_woe_rules includes missing_bin etc.
-        """Apply WOE transformation to a single feature. woe_bins_list is list of bin dicts."""
+                           feature_woe_rules: Dict) -> None:
+        """Apply WOE transformation to a single feature. woe_bins_list is list of bin dicts (BadRates)."""
         data_df[new_woe_col_name] = pd.NA # Initialize column
 
         if original_feature_name not in data_df.columns:
-            # Log: print(f"Warning: Original feature '{original_feature_name}' not found in data for transform. Column '{new_woe_col_name}' will be all NA.")
-            # Fill with a default WOE if applicable, or leave as NA / handle in _handle_missing_values
-            # This case should ideally be caught by _handle_missing_values if all values are effectively "missing"
-            # For now, let _handle_missing_values manage it.
-            pass
+            self.logger.warning(f"Original feature '{original_feature_name}' not found in data for transform. Column '{new_woe_col_name}' will be all NA.")
+            # All values will be NA, and _handle_missing_values will take care of them.
+            pass # No explicit filling here, _handle_missing_values will do it.
 
-
-        for bin_info_dict in woe_bins_list:
-            if not isinstance(bin_info_dict, dict): continue # Skip malformed bin_info
-
-            current_bin_values = bin_info_dict.get("bin")
-            current_woe = bin_info_dict.get("woe")
-
-            if current_bin_values is None or current_woe is None:
-                # Log: print(f"Warning: Malformed bin_info {bin_info_dict} for feature {original_feature_name}. Skipping this bin.")
+        is_categorical = original_feature_name in self.cat_features
+        for bin_info_item in woe_bins_list: # woe_bins_list contains BadRates objects or dicts
+            # Ensure bin_info_item is a dict if it comes directly from JSON, or access attributes if it's BadRates
+            if isinstance(bin_info_item, dict):
+                bin_data_for_apply = bin_info_item
+            # If woe_bins_list can contain BadRates objects (e.g. if not from JSON)
+            # This part depends on the actual structure of woe_bins_list elements.
+            # Assuming they are dicts as per current load_woe_iv_dict and processing.
+            # If they were BadRates dataclass objects:
+            # elif hasattr(bin_info_item, 'bin') and hasattr(bin_info_item, 'woe'):
+            #    bin_data_for_apply = {"bin": bin_info_item.bin, "woe": bin_info_item.woe}
+            else:
+                self.logger.warning(f"Skipping unexpected item in woe_bins_list for {original_feature_name}: {bin_info_item}")
                 continue
 
-            # Determine if feature is categorical based on self.cat_features
-            is_categorical = original_feature_name in self.cat_features
+            self._apply_single_bin_woe(data_df, original_feature_name, new_woe_col_name,
+                                       bin_data_for_apply, is_categorical)
 
-            if is_categorical:
-                if not isinstance(current_bin_values, list):
-                    # Log: print(f"Warning: Categorical bin for {original_feature_name} is not a list: {current_bin_values}. Skipping.")
-                    continue
-                # Ensure source column exists before .isin()
-                if original_feature_name in data_df.columns:
-                    data_df.loc[data_df[original_feature_name].isin(current_bin_values), new_woe_col_name] = current_woe
-            else:
-                # Assuming bin_info["bin"] is [lower_bound, upper_bound] for numerical
-                # Ensure bin_info["bin"] is a list/tuple with at least 2 elements for safety,
-                # though binning logic should ensure this.
-                if isinstance(bin_info["bin"], (list, tuple)) and len(bin_info["bin"]) == 2:
-                    lower_bound, upper_bound = bin_info["bin"][0], bin_info["bin"][1]
-                # Ensure bin_info["bin"] is a list/tuple with at least 2 elements for safety
-                if isinstance(current_bin_values, (list, tuple)) and len(current_bin_values) == 2:
-                    lower_bound, upper_bound = current_bin_values[0], current_bin_values[1]
-                    # Ensure source column exists before masking
-                    if original_feature_name in data_df.columns:
-                        mask = (data_df[original_feature_name] >= lower_bound) & (data_df[original_feature_name] < upper_bound)
+        self._handle_missing_values(data_df, original_feature_name, new_woe_col_name, woe_bins_list, feature_woe_rules)
+
+
+    def _apply_single_bin_woe(self, data_df: pd.DataFrame, original_feature_name: str, new_woe_col_name: str,
+                                bin_info: Dict, is_categorical: bool) -> None:
+        """Applies WOE for a single bin to the DataFrame."""
+        current_bin_values = bin_info.get("bin")
+        current_woe = bin_info.get("woe")
+
+        if current_bin_values is None or current_woe is None:
+            self.logger.warning(f"Malformed bin_info {bin_info} for feature {original_feature_name}. Skipping this bin.")
+            return
+
+        if is_categorical:
+            if not isinstance(current_bin_values, list):
+                self.logger.warning(f"Categorical bin for {original_feature_name} is not a list: {current_bin_values}. Skipping.")
+                return
+            if original_feature_name in data_df.columns: # Ensure source column exists
+                # Ensure all items in current_bin_values are comparable to data_df column
+                # This might involve type conversion if data_df column is numeric but bin_values are strings from JSON
+                # For now, assume types are compatible as per prior processing.
+                try:
+                    mask = data_df[original_feature_name].isin(current_bin_values)
+                    data_df.loc[mask, new_woe_col_name] = current_woe
+                except TypeError as e:
+                    self.logger.error(f"TypeError during .isin() for categorical feature {original_feature_name} with bin {current_bin_values}. Data type: {data_df[original_feature_name].dtype}. Error: {e}")
+        else: # Numerical
+            if isinstance(current_bin_values, (list, tuple)) and len(current_bin_values) == 2:
+                lower_bound, upper_bound = current_bin_values[0], current_bin_values[1]
+                if original_feature_name in data_df.columns: # Ensure source column exists
+                    try:
+                        # Ensure bounds are numeric if column is numeric
+                        # This can be an issue if bounds are NINF/INF as strings from JSON
+                        # For now, assume they are loaded correctly as numbers/np.inf
+                        mask = (data_df[original_feature_name] >= lower_bound) & \
+                               (data_df[original_feature_name] < upper_bound)
                         data_df.loc[mask, new_woe_col_name] = current_woe
-                else:
-                    # Log: print(f"Warning: Unexpected bin format for numerical feature {original_feature_name}: {current_bin_values}. Skipping this bin.")
-                    pass # Continue to next bin
+                    except TypeError as e:
+                         self.logger.error(f"TypeError during numerical comparison for {original_feature_name} with bounds {lower_bound}, {upper_bound}. Data type: {data_df[original_feature_name].dtype}. Error: {e}")
+            else:
+                self.logger.warning(f"Unexpected bin format for numerical feature {original_feature_name}: {current_bin_values}. Skipping this bin.")
 
-        self._handle_missing_values(data_df, new_woe_col_name, woe_bins_list, feature_woe_rules)
 
-
-    def _handle_missing_values(self, data_df: pd.DataFrame, new_woe_col_name: str,
-                             woe_bins_list: List[Dict], # List of bin dicts
-                             feature_woe_rules: Dict) -> None: # Full ruleset for the feature including "missing_bin"
+    def _handle_missing_values(self, data_df: pd.DataFrame, original_feature_name: str, new_woe_col_name: str,
+                             woe_bins_list: List[Dict],
+                             feature_woe_rules: Dict) -> None:
         """Handle missing values in WOE transformation by filling NAs in the new WOE column."""
+        # This method now also handles cases where the original feature might be missing in the input data_df
+        # by checking data_df[new_woe_col_name].isna().sum() > 0 after bin applications.
+
         missing_bin_strategy = feature_woe_rules.get("missing_bin")
-        fill_woe_value = pd.NA # Default to NA if no strategy or rules match
+        fill_woe_value = pd.NA
 
-        if not woe_bins_list: # No bins defined for this feature
-             # Log: print(f"Warning: No WOE bins available for {new_woe_col_name}, missing values cannot be mapped via bin strategy.")
-             # Keep NAs or fill with a global default if desired. For now, keeps NAs.
-             return
-
-
-        if missing_bin_strategy == "first":
-            if woe_bins_list[0] and "woe" in woe_bins_list[0]:
+        # Determine the WOE value to use for missing/unmapped values
+        if not woe_bins_list:
+            self.logger.warning(f"No WOE bins available for {new_woe_col_name} (feature: {original_feature_name}), "
+                                f"missing/unmapped values cannot be mapped via bin strategy.")
+        elif missing_bin_strategy == "first":
+            if woe_bins_list[0] and "woe" in woe_bins_list[0]: # Check if first bin exists and has WOE
                 fill_woe_value = woe_bins_list[0]["woe"]
+            else:
+                self.logger.warning(f"Missing strategy 'first' for {new_woe_col_name} but first bin is invalid or has no WOE.")
         elif missing_bin_strategy == "last":
-            if woe_bins_list[-1] and "woe" in woe_bins_list[-1]:
+            if woe_bins_list[-1] and "woe" in woe_bins_list[-1]: # Check if last bin exists and has WOE
                 fill_woe_value = woe_bins_list[-1]["woe"]
-        else: # Default or other strategies (e.g., if missing_bin is None or unexpected)
-            # Original fallback: use WOE of first or last bin, whichever WOE is smaller.
-            # This implies 'smaller WOE is safer/more common' for unassigned missings.
+            else:
+                self.logger.warning(f"Missing strategy 'last' for {new_woe_col_name} but last bin is invalid or has no WOE.")
+        else: # Default fallback logic (missing_bin_strategy is None or unexpected)
+            self.logger.info(f"No specific missing_bin_strategy for {new_woe_col_name} (feature: {original_feature_name}) or strategy is '{missing_bin_strategy}'. "
+                             "Using fallback: smaller WOE of first/last bin if available.")
             try:
-                woe_first = woe_bins_list[0].get("woe")
-                woe_last = woe_bins_list[-1].get("woe")
+                woe_first = woe_bins_list[0].get("woe") if woe_bins_list else None
+                woe_last = woe_bins_list[-1].get("woe") if woe_bins_list else None
+
                 if woe_first is not None and woe_last is not None:
                     fill_woe_value = woe_first if woe_first < woe_last else woe_last
-                elif woe_first is not None: # Only first bin exists or last has no WOE
+                elif woe_first is not None:
                     fill_woe_value = woe_first
-                elif woe_last is not None: # Only last bin exists or first has no WOE
+                elif woe_last is not None:
                     fill_woe_value = woe_last
-            except IndexError: # woe_bins_list might be empty
-                # Log: print(f"Warning: woe_bins_list is empty for {new_woe_col_name} during missing value handling fallback.")
-                pass # fill_woe_value remains pd.NA or its initial default
+                else: # Neither first nor last bin has a WOE value
+                    self.logger.warning(f"Fallback for {new_woe_col_name} could not find WOE in first or last bin.")
+            except IndexError: # Should be caught by `if not woe_bins_list:` but as a safeguard
+                self.logger.warning(f"Fallback for {new_woe_col_name} failed due to IndexError (empty woe_bins_list).")
 
-        if not pd.isna(fill_woe_value): # Only fill if we determined a value
-            data_df[new_woe_col_name].fillna(fill_woe_value, inplace=True)
-        # Else, NAs remain in new_woe_col_name if no clear strategy or WOE value found.
+        # Apply the determined fill_woe_value to any remaining NAs in the WOE column
+        # This includes actual NaNs in original_feature_name, or values not covered by any bin,
+        # or if original_feature_name was missing entirely.
+        if data_df[new_woe_col_name].isna().any():
+            if not pd.isna(fill_woe_value):
+                self.logger.info(f"Filling {data_df[new_woe_col_name].isna().sum()} NA values in '{new_woe_col_name}' with WOE: {fill_woe_value:.4f} (Strategy: {missing_bin_strategy if missing_bin_strategy else 'fallback/default'})")
+                data_df[new_woe_col_name].fillna(fill_woe_value, inplace=True)
+            else:
+                self.logger.warning(f"{data_df[new_woe_col_name].isna().sum()} NA values remain in '{new_woe_col_name}' as no valid fill WOE was determined (Strategy: {missing_bin_strategy if missing_bin_strategy else 'fallback/default'}).")
 
 
     def refit(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> None:
@@ -324,7 +358,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 ) for d in self.woe_iv_dict if isinstance(d, dict) and d # Ensure d is a non-empty dict
             )
         except Exception as e: # Catch errors from prepare_data or Parallel execution
-            # Log error: print(f"Error during WOE refitting process: {e}")
+            self.logger.error(f"Error during WOE refitting process: {e}")
             raise RuntimeError(f"Failed to refit WOE transformations: {e}") from e
 
 
@@ -334,10 +368,10 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             with open(file_path, "w", encoding='utf-8') as f:
                 json.dump(self.woe_iv_dict, f, indent=4, cls=NpEncoder)
         except IOError as e:
-            # Log error: print(f"IOError saving WOE dictionary to {file_path}: {e}")
+            self.logger.error(f"IOError saving WOE dictionary to {file_path}: {e}")
             raise IOError(f"Failed to save WOE dictionary to {file_path}: {e}") from e
         except TypeError as e: # For NpEncoder issues or non-serializable content
-            # Log error: print(f"TypeError during JSON serialization for WOE dictionary: {e}")
+            self.logger.error(f"TypeError during JSON serialization for WOE dictionary: {e}")
             raise TypeError(f"Failed to serialize WOE dictionary: {e}") from e
 
 
@@ -347,13 +381,13 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             with open(file_path, "r", encoding='utf-8') as f:
                 self.woe_iv_dict = json.load(f)
         except FileNotFoundError:
-            # Log error: print(f"FileNotFoundError: WOE dictionary file not found at {file_path}")
+            self.logger.error(f"FileNotFoundError: WOE dictionary file not found at {file_path}")
             raise FileNotFoundError(f"WOE dictionary file not found: {file_path}")
         except json.JSONDecodeError as e:
-            # Log error: print(f"JSONDecodeError: Error decoding WOE dictionary from {file_path}: {e}")
+            self.logger.error(f"JSONDecodeError: Error decoding WOE dictionary from {file_path}: {e}")
             raise ValueError(f"Invalid JSON format in WOE dictionary file {file_path}: {e}") from e
         except IOError as e:
-            # Log error: print(f"IOError loading WOE dictionary from {file_path}: {e}")
+            self.logger.error(f"IOError loading WOE dictionary from {file_path}: {e}")
             raise IOError(f"Failed to load WOE dictionary from {file_path}: {e}") from e
 
 
@@ -376,72 +410,110 @@ class CreateModel(BaseEstimator, TransformerMixin):
                  cv: int = 3,
                  l1_exp_scale: int = 4,
                  l1_grid_size: int = 20,
-                 scoring: str = "roc_auc"):
+                 scoring: str = "roc_auc",
+                 # Add woe_rules to init, needed for FeatureSelector if it calculates IV
+                 woe_transformer_rules: Optional[List[Dict]] = None,
+                 feature_names: Optional[List[str]] = None): # Original feature names, not WOE transformed
 
-        # Store parameters, ensuring 'feature_names' is not part of model_params for FeatureSelector/Model
-        temp_params = {k: v for k, v in locals().items() if k not in ['self', 'feature_names']}
-        self.model_params = temp_params
+        self.selection_method = selection_method
+        self.model_type = model_type
+        self.max_vars = max_vars
+        self.special_cols = special_cols if special_cols is not None else []
+        self.unused_cols = unused_cols if unused_cols is not None else []
+        self.n_jobs = n_jobs
+        self.gini_threshold = gini_threshold
+        self.iv_threshold = iv_threshold
+        self.corr_threshold = corr_threshold
+        self.min_pct_group = min_pct_group # Used by FeatureSelector if it re-bins for Gini/IV
+        self.random_state = random_state
+        self.class_weight = class_weight
+        self.direction = direction
+        self.cv = cv
+        self.l1_exp_scale = l1_exp_scale
+        self.l1_grid_size = l1_grid_size
+        self.scoring = scoring
+        self.woe_transformer_rules = woe_transformer_rules if woe_transformer_rules is not None else []
+        self.input_feature_names = feature_names if feature_names is not None else [] # Original (non-WOE) names
 
+        self.logger = logging.getLogger(__name__)
         self.feature_selector: Optional[FeatureSelector] = None
         self.model: Optional[Model] = None
-        self.model_results: Optional[pd.DataFrame] = None # Ensure type hint consistency
+        self.model_results: Optional[pd.DataFrame] = None
 
     def fit(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> 'CreateModel':
-        """Fit model with feature selection"""
-        if 'feature_names' not in self.model_params or not self.model_params['feature_names']:
-             # If feature_names are not explicitly passed to CreateModel's params,
-             # they should be derived from 'data' after removing special/unused cols.
-             # This assumes 'data' in fit() is the full dataset before WOE transformation.
-            temp_data_for_names, feature_names_from_data = prepare_data(data.copy(), self.model_params.get('special_cols'))
-            if self.model_params.get('unused_cols'):
-                feature_names_from_data = [fn for fn in feature_names_from_data if fn not in self.model_params['unused_cols']]
-            current_model_params = {**self.model_params, 'feature_names': feature_names_from_data}
-        else:
-            current_model_params = self.model_params
+        """Fit model with feature selection.
+        'data' is expected to be WOE-transformed data.
+        'self.input_feature_names' should be original feature names if provided,
+        or derived from woe_transformer_rules.
+        """
+        self.logger.info("Starting CreateModel fitting process.")
+
+        original_feature_names_for_selector: List[str] = []
+        if self.input_feature_names:
+            original_feature_names_for_selector = self.input_feature_names
+        elif self.woe_transformer_rules:
+            self.logger.info("Deriving original feature names from woe_transformer_rules for FeatureSelector.")
+            for rule_set in self.woe_transformer_rules:
+                if isinstance(rule_set, dict) and rule_set:
+                    original_feature_names_for_selector.append(next(iter(rule_set)))
+
+        if not original_feature_names_for_selector and self.woe_transformer_rules is not None :
+             self.logger.warning("Could not derive original feature names for FeatureSelector. "
+                                 "IV/Gini based selection might be impacted if selector needs them.")
+
+        # features_in_woe_data are the columns in the input 'data' (WOE names)
+        features_in_woe_data = list(data.columns)
+
+        selector_params = {
+            "selection_method": self.selection_method, "model_type": self.model_type,
+            "max_vars": self.max_vars, "special_cols": self.special_cols, # special_cols might be irrelevant if data is already WOE
+            "unused_cols": self.unused_cols, # unused_cols might be irrelevant here
+            "n_jobs": self.n_jobs, "gini_threshold": self.gini_threshold,
+            "iv_threshold": self.iv_threshold, "corr_threshold": self.corr_threshold,
+            "min_pct_group": self.min_pct_group, "random_state": self.random_state,
+            "direction": self.direction, "cv": self.cv, "scoring": self.scoring,
+            "feature_names": original_feature_names_for_selector, # Original names
+            "woe_rules": self.woe_transformer_rules # Pass WOE rules for IV calculation
+        }
+
+        model_constructor_params = {
+            "model_type": self.model_type, "random_state": self.random_state,
+            "class_weight": self.class_weight, "n_jobs": self.n_jobs, "cv": self.cv,
+            "l1_exp_scale": self.l1_exp_scale, "l1_grid_size": self.l1_grid_size,
+            "scoring": self.scoring
+        }
 
         try:
-            self.feature_selector = FeatureSelector(**current_model_params)
-            # Ensure data passed to select contains only feature_names expected by selector
-            # This usually means data after WOE transformation if selector runs on WOE features.
-            # However, selector is often run on original or binned data, not WOE values directly.
-            # Assuming 'data' here is the data on which selection should happen.
-            # And feature_names in current_model_params are columns in this 'data'.
+            self.feature_selector = FeatureSelector(**selector_params) # type: ignore
+            # FeatureSelector.select expects WOE data, and list of WOE features to select from.
+            # It uses its internal feature_names (original) and woe_rules to map for IV if needed.
+            self.logger.info(f"Starting feature selection using method: {self.selection_method}")
+            selected_woe_features = self.feature_selector.select(data, target, features_in_woe_data)
 
-            # The 'feature_names' argument to .select() should be the list of features to select from.
-            # If data is already WOE transformed, then feature_names should be WOE columns.
-            # This part is tricky: CreateModel.fit is typically called on WOE transformed data.
-            # So, data.columns should be the WOE features.
-            # model_params['feature_names'] in FeatureSelector likely refers to original features for Gini/IV.
-            # This needs careful review of FeatureSelector's internal needs.
-            # For now, assume data.columns are the features to select from if model_params['feature_names'] is not set.
-
-            features_to_select_from = current_model_params['feature_names']
-            if not features_to_select_from and isinstance(data, pd.DataFrame):
-                features_to_select_from = list(data.columns)
-
-            selected_features = self.feature_selector.select(data, target, features_to_select_from)
-            if not selected_features:
+            if not selected_woe_features:
+                self.logger.error("Feature selection returned no features. Cannot fit model.")
                 raise ValueError("Feature selection returned no features. Cannot fit model.")
+            self.logger.info(f"Selected {len(selected_woe_features)} features: {selected_woe_features}")
 
         except Exception as e:
-            # Log error: print(f"Error during feature selection: {e}")
+            self.logger.error(f"Error during feature selection: {e}", exc_info=True)
             raise RuntimeError(f"Feature selection failed: {e}") from e
 
         try:
-            self.model = Model(**current_model_params) # Pass all relevant params
-            self.model.get_model(data[selected_features], target) # Fit model on selected features
+            self.model = Model(**model_constructor_params) # type: ignore
+            self.logger.info(f"Fitting model of type: {self.model_type} on selected features.")
+            self.model.get_model(data[selected_woe_features], target)
         except Exception as e:
-            # Log error: print(f"Error during model fitting: {e}")
+            self.logger.error(f"Error during model fitting: {e}", exc_info=True)
             raise RuntimeError(f"Model fitting failed: {e}") from e
 
         try:
+            self.logger.info("Calculating model results.")
             self.model_results = _calc_model_results(self.model)
         except Exception as e:
-            # Log error: print(f"Error calculating model results: {e}")
-            # self.model_results might remain None or be an empty DataFrame
-            self.model_results = pd.DataFrame() # Ensure it's a DF even if empty
-            # Optionally re-raise if model_results are critical for subsequent steps
-            # raise RuntimeError(f"Failed to calculate model results: {e}") from e
+            self.logger.error(f"Error calculating model results: {e}", exc_info=True)
+            self.model_results = pd.DataFrame()
+        self.logger.info("CreateModel fitting process completed.")
         return self
 
     def predict_proba(self, data: pd.DataFrame) -> np.ndarray:
@@ -451,7 +523,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
         try:
             return self.model.predict_proba(data)
         except Exception as e:
-            # Log error: print(f"Error during predict_proba: {e}")
+            # print(f"Error during predict_proba: {e}") # Log this if CreateModel had a logger
             raise RuntimeError(f"Prediction (proba) failed: {e}") from e
 
     def predict(self, data: pd.DataFrame) -> np.ndarray:
@@ -461,7 +533,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
         try:
             return self.model.predict(data)
         except Exception as e:
-            # Log error: print(f"Error during predict: {e}")
+            # print(f"Error during predict: {e}") # Log this if CreateModel had a logger
             raise RuntimeError(f"Prediction failed: {e}") from e
 
     def save_reports(self, path: str) -> None:
