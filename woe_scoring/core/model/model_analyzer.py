@@ -1,7 +1,8 @@
 import os
+import pandas as pd
 from typing import List
 
-import statsmodels.api as sm # For type hinting sm.Logit results
+import statsmodels.api as sm
 
 # Assuming Model class is defined elsewhere and will be imported where these functions are used.
 # For example, if Model is in .model (sibling module to functions.py, now this module)

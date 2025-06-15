@@ -8,7 +8,7 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.model_selection import cross_val_score
 from sklearn.svm import l1_min_c
-from functools import lru_cache
+# from functools import lru_cache
 
 
 class SMWrapper(BaseEstimator, RegressorMixin):
@@ -80,7 +80,7 @@ class Model:
         self.pvalues_: List[float] = []
         self.model_results: Any = None
 
-    @lru_cache(maxsize=None)
+    # @lru_cache(maxsize=None)
     def get_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> Any:
         return self.model(data, target)
 

@@ -1,12 +1,11 @@
-from typing import Dict, List, Union, Any # Any for now for encoder if not typed
-from functools import partial # Keep for now, might change with direct function call
+from typing import Dict, List, Union
+from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
 
-# Assuming gini_calculator.py is in the same directory or accessible via package structure
-from . import gini_calculator # Relative import for sibling module
+from . import gini_calculator
 
 def calculate_gini_quality_for_features(data: Union[pd.DataFrame, np.ndarray],
                                         target: Union[pd.Series, np.ndarray],
@@ -18,7 +17,6 @@ def calculate_gini_quality_for_features(data: Union[pd.DataFrame, np.ndarray],
                                         n_jobs: int) -> Dict[str, float]:
     """Calculate Gini quality scores for multiple features in parallel."""
 
-    # Ensure target is numpy array for consistency
     y_np: np.ndarray
     if isinstance(target, pd.Series):
         y_np = target.values
@@ -27,45 +25,29 @@ def calculate_gini_quality_for_features(data: Union[pd.DataFrame, np.ndarray],
     else:
         raise TypeError("Target must be pandas Series or numpy array.")
 
-    # Data can be DataFrame or a dictionary of arrays if pre-processed.
-    # For now, assume DataFrame as per original calculate_score usage.
     data_df: pd.DataFrame
     if isinstance(data, pd.DataFrame):
         data_df = data
-    # If data is an ndarray, it implies it's a single feature, not suitable for this multi-feature function
-    # Or it needs to be a structured array or dict of features. The original GiniScoreCalculator took DataFrame.
-    # For now, sticking to DataFrame to match the expected input for gini_calculator.calculate_score's feature access.
     elif isinstance(data, np.ndarray):
-         # This case needs clarification: if 'data' is a NumPy array, how are 'feature_names' used?
-         # Original GiniScoreCalculator expects data[feature].
-         # Assuming if data is ndarray, it's for a single pre-selected feature scenario,
-         # which doesn't fit 'calc_features_gini_quality'.
-         # For now, let's expect data to be a DataFrame here.
         raise TypeError("Input 'data' is expected to be a pandas DataFrame for multi-feature Gini calculation.")
 
 
     try:
         with ThreadPoolExecutor(max_workers=n_jobs) as executor:
-            # Use the imported function directly
-            # The 'partial' helps set arguments that are common across all calls
             calc_score_partial = partial(gini_calculator.calculate_score,
-                                         data=data_df, # Pass DataFrame
-                                         target=y_np,  # Pass numpy array target
+                                         data=data_df,
+                                         target=y_np,
                                          random_state=random_state,
                                          class_weight=class_weight,
                                          cv=cv,
                                          scoring=scoring,
-                                         n_jobs=1) # Each call to calculate_score runs in its own thread
+                                         n_jobs=1)
 
-            # executor.map will raise the first exception encountered in a worker
             scores = list(executor.map(calc_score_partial, feature_names))
             return dict(zip(feature_names, scores))
-    except RuntimeError as e: # Catch RuntimeError from gini_calculator.calculate_score
-        # Log error: print(f"Error during Gini calculation for one or more features: {e}")
-        # Re-raise with a more general message or handle by returning partial results if desired
+    except RuntimeError as e:
         raise RuntimeError(f"Gini quality calculation failed: {e}") from e
-    except Exception as e: # Catch other potential errors from ThreadPoolExecutor itself
-        # Log error: print(f"Unexpected error in calculate_gini_quality_for_features: {e}")
+    except Exception as e:
         raise RuntimeError(f"Unexpected error during parallel Gini calculation: {e}") from e
 
 
@@ -75,7 +57,7 @@ def check_gini_threshold(feature_names: List[str],
     """Get features that are above a specified Gini threshold."""
     return [f_name for f_name in feature_names if gini_scores.get(f_name, -np.inf) >= threshold]
 
-def check_correlation(data: pd.DataFrame, # Expects DataFrame for .corr()
+def check_correlation(data: pd.DataFrame,
                       feature_names: List[str],
                       gini_scores: Dict[str, float],
                       threshold: float) -> List[str]:
@@ -84,28 +66,19 @@ def check_correlation(data: pd.DataFrame, # Expects DataFrame for .corr()
         return []
 
     try:
-        # Ensure only valid feature names that exist in data are used for correlation
         valid_feature_names_for_corr = [name for name in feature_names if name in data.columns]
         if not valid_feature_names_for_corr:
-            # Log: print("Warning: No valid features found in data for correlation check.")
             return []
 
         corr_matrix = data[valid_feature_names_for_corr].corr().abs()
-        # Initialize with valid names that were actually used for correlation
         uncorrelated_features = set(valid_feature_names_for_corr)
     except (KeyError, TypeError, ValueError) as e:
-        # Log error: print(f"Error calculating correlation matrix: {e}. Returning empty list.")
-        # This could happen if feature_names are not in data, or data is non-numeric.
         raise ValueError(f"Failed to calculate correlation matrix. Ensure features exist and are numeric. Error: {e}") from e
 
-    # Iterate over the upper triangle of the correlation matrix using valid_feature_names_for_corr
     for i in range(len(valid_feature_names_for_corr)):
         for j in range(i + 1, len(valid_feature_names_for_corr)):
             f1 = valid_feature_names_for_corr[i]
             f2 = valid_feature_names_for_corr[j]
-
-            # No need to check if f1/f2 in uncorrelated_features if it's initialized with valid_feature_names_for_corr
-            # and items are only removed.
 
             if corr_matrix.loc[f1, f2] >= threshold:
                 gini1 = gini_scores.get(f1, -np.inf)
@@ -128,29 +101,20 @@ def check_min_group_percentage(data: pd.DataFrame,
     valid_features = []
     for f_name in feature_names:
         if f_name not in data.columns:
-            # Log warning: print(f"Warning: Feature '{f_name}' not found in data for min_group_percentage check.")
             continue
 
         try:
-            # Ensure column is not all NaN, as value_counts might behave unexpectedly or be empty.
             if data[f_name].isna().all():
-                # Log: print(f"Info: Feature '{f_name}' is all NaN, skipping min_group_percentage check.")
                 continue
 
             value_counts_norm = data[f_name].value_counts(normalize=True, dropna=False) # include NA in counts if needed
 
-            if value_counts_norm.empty: # Should not happen if not all NaN, but as a safeguard
-                # Log: print(f"Info: Feature '{f_name}' has no value counts, skipping.")
+            if value_counts_norm.empty:
                 continue
 
-            # Check if the smallest group (excluding NaNs if dropna=True was used) meets threshold
-            # If dropna=False, then NaN group percentage is also checked.
-            # Decide if min_pct applies to NaN group. Assuming it does for now.
             if value_counts_norm.min() >= min_pct:
                 valid_features.append(f_name)
-        except Exception as e:
-            # Log error: print(f"Error processing feature '{f_name}' for min_group_percentage: {e}")
-            # Decide whether to skip this feature or raise error. For now, skip.
+        except Exception:
             continue
 
     return valid_features

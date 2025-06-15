@@ -9,7 +9,6 @@ from sklearn.feature_selection import RFECV, SequentialFeatureSelector
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import l1_min_c
 
-# Updated import for calculate_iv_for_feature
 from .feature_analyzer import calculate_iv_for_feature
 
 
@@ -44,20 +43,24 @@ class FeatureSelector:
     iv_threshold: float
 
     def __post_init__(self):
-        self.selector = self._get_selector()
         self._validate_inputs()
+        self.selector = self._get_selector()
 
     def _validate_inputs(self) -> None:
         """Validate input parameters"""
-        if self.selection_type not in {'rfe', 'sfs', 'iv'}:
-            raise ValueError(f'Unknown selection type: {self.selection_type}. Must be "rfe", "sfs" or "iv"')
+        valid_selection_types = {'rfe', 'sfs', 'iv'}
+        if self.selection_type not in valid_selection_types:
+            raise ValueError(f'Unknown selection type: {self.selection_type}. Must be one of {valid_selection_types}')
 
     def select(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
         if not feature_names:
             return []
-        return self.selector(data=data, target=target, feature_names=feature_names)
+        try:
+            return self.selector(data=data, target=target, feature_names=feature_names)
+        except Exception as e:
+            raise ValueError(f"Feature selection failed: {str(e)}")
 
-    @lru_cache(maxsize=1)
+    # @lru_cache(maxsize=1)
     def _get_selector(self) -> Callable:
         """Returns the appropriate feature selection function based on selection_type."""
         selectors = {
@@ -65,7 +68,8 @@ class FeatureSelector:
             'sfs': self._select_by_sfs,
             'iv': self._select_by_iv
         }
-        return selectors[self.selection_type]
+        # Selection type has already been validated in _validate_inputs
+        return selectors.get(self.selection_type, self._select_by_iv)  # Default to IV selection if unexpected
 
     def _get_base_estimator(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> LogisticRegression:
         """Creates and returns a LogisticRegression estimator with optimized parameters."""

@@ -1,10 +1,17 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Union, Optional
-from functools import lru_cache
+from typing import Dict, List, Tuple, Union, Optional, Any
+# from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 from scipy.stats import chisquare
+# from scipy.stats.contingency import chi2_contingency # Alternative if manual is complex
+import logging # Add logging
+
+logger = logging.getLogger(__name__) # Module-level logger
+
+# Define a fallback value for max_bins if percentage calculation yields zero or invalid results
+MIN_BINS_FALLBACK = 20 # Example value, can be adjusted
 
 
 @dataclass(frozen=True)
@@ -24,16 +31,77 @@ class BinningResult:
     missing_bin: Optional[str] = None
     type_feature: Optional[str] = None
     bins: List = field(default_factory=list)
+    overall_good: int = 0
+    overall_bad: int = 0
 
 
-def _chi2(bad_rates: List[BadRates], overall_rate: float) -> float:
-    """Calculate chi-square statistic"""
-    f_obs = np.array([b.bad for b in bad_rates])
-    f_exp = f_obs * overall_rate
-    return chisquare(f_obs=f_obs, f_exp=f_exp)[0]
+# Define a fallback value for max_bins if percentage calculation yields zero or invalid results
+MIN_BINS_FALLBACK = 20 # Example value, can be adjusted
 
 
-@lru_cache(maxsize=128)
+def _chi2(bad_rates: List[BadRates], all_bad: int, all_good: int) -> float:
+    """Calculate chi-square statistic for a list of bins (BadRates)."""
+    # Chi-square test of independence on a 2xK contingency table (Good/Bad vs Bins)
+    # Observed frequencies: [[good1, bad1], [good2, bad2], ...]
+    # Expected frequencies: [[expected_good1, expected_bad1], [expected_good2, expected_bad2], ...]
+    # Expected_bad_i = total_i * (all_bad / total_all)
+    # Expected_good_i = total_i * (all_good / total_all)
+
+    if all_bad == 0 and all_good == 0:
+        # Cannot calculate chi2 if there's no data or target distribution
+        return 0.0
+    if len(bad_rates) <= 1:
+         # Cannot calculate chi2 with 1 or zero bins
+         return 0.0
+
+    observed = []
+    total_all = all_bad + all_good
+
+    if total_all == 0: # Should be caught by first check, but double safe
+        return 0.0
+
+    for bin_rate in bad_rates:
+        # Use original bad/total counts before smoothing for chi2
+        observed_bad = bin_rate.bad
+        observed_good = bin_rate.total - observed_bad # Assuming total is original total
+
+        if observed_bad is None or bin_rate.total is None: # Defensive check
+             continue
+
+        observed.append([observed_good, observed_bad])
+
+    if not observed:
+        return 0.0
+
+    try:
+        observed_arr = np.array(observed, dtype=float)  # Use float to avoid integer division issues
+        row_totals = observed_arr.sum(axis=1, keepdims=True) # Totals per bin
+        col_totals = observed_arr.sum(axis=0, keepdims=True) # Overall good/bad totals
+        grand_total = observed_arr.sum() # Overall total (should be sum(b.total))
+
+        if grand_total == 0: # Should be same as total_all
+            return 0.0
+
+        expected_arr = (row_totals * col_totals) / grand_total
+
+        # Calculate chi-square statistic manually for the contingency table
+        # Flatten observed and expected arrays
+        observed_flat = observed_arr.flatten()
+        expected_flat = expected_arr.flatten()
+
+        # Avoid division by zero for expected counts
+        # Add a small epsilon to expected counts if they are zero
+        expected_flat[expected_flat == 0] = 1e-9 # Small epsilon to avoid division by zero
+
+        chi2_stat = np.sum((observed_flat - expected_flat)**2 / expected_flat)
+
+        return float(chi2_stat)  # Ensure return is a simple float
+    except Exception as e:
+        logger.warning(f"Error in chi2 calculation: {e}")
+        return 0.0  # Return 0 on error
+
+
+# @lru_cache(maxsize=128)
 def _check_diff_woe(bad_rates: Tuple[BadRates], diff_woe_threshold: float) -> Optional[int]:
     """Check if WOE differences are below threshold"""
     woe_delta = np.abs(np.diff([b.woe for b in bad_rates]))
@@ -50,17 +118,49 @@ def _mono_flags(bad_rates: List[BadRates]) -> bool:
     return np.all(diffs > 0) or np.all(diffs < 0)
 
 
-def _find_index_of_diff_flag(bad_rates: List[BadRates]) -> int:
-    """Find index where monotonicity changes"""
+def _find_index_of_diff_flag(bad_rates: List[BadRates]) -> Optional[int]:
+    """Find index where monotonicity changes. Returns index or None if monotonic or <= 1 bin diff."""
+    if len(bad_rates) <= 1: # Need at least 2 points to calculate diff
+        return None
     bad_rate_diffs = np.diff([b.bad_rate for b in bad_rates])
+    if len(bad_rate_diffs) == 0: # Should not happen if len(bad_rates) > 1, but defensive
+         return None
     diffs_bool = bad_rate_diffs > 0
-    return np.argmin(diffs_bool)
+    # np.argmin(boolean array) finds the first index where the value is False.
+    # If all diffs are > 0 (all True), np.argmin(True, True, ...) -> 0.
+    # If all diffs are < 0 (all False), np.argmin(False, False, ...) -> 0.
+    # This means np.argmin returns 0 if it's monotonic (all diffs same sign).
+    # We only care about non-monotonic changes.
+    # Check if all diffs have the same sign.
+    first_diff_sign = np.sign(bad_rate_diffs[0]) if bad_rate_diffs[0] != 0 else 0
+    is_monotonic = all(np.sign(d) == first_diff_sign or d == 0 for d in bad_rate_diffs)
+
+    if is_monotonic:
+        return None # It's monotonic
+
+    # If not monotonic, find the first index where the sign changes relative to the previous one.
+    # Or, the index where the bad_rate is 'out of line'.
+    # The original logic np.argmin(diffs_bool) finds the first index where diffs_bool is False.
+    # E.g., diffs = [0.1, -0.2, 0.3]. diffs_bool = [True, False, True]. argmin = 1. This seems correct.
+    # E.g., diffs = [-0.1, 0.2, -0.3]. diffs_bool = [False, True, False]. argmin = 0. This also seems correct.
+    return int(np.argmin(diffs_bool))
 
 
 def _merge_bins_chi(x: np.ndarray, y: np.ndarray,
                    bad_rates: List[BadRates], bins: List) -> Tuple[List[BadRates], List]:
     """Merge bins using chi-square method"""
+    # Ensure bad_rates has at least 2 items to proceed with merging
+    if len(bad_rates) <= 1:
+        # No merging possible or needed
+        result = _bin_bad_rates(x, y, bins) # Re-calculate in case of initial smoothing
+        return result.bad_rates, result.bins # Return original bins and re-calculated rates
+
     idx = _find_index_of_diff_flag(bad_rates)
+    if idx is None: # Should be monotonic at this point if length > 1
+         result = _bin_bad_rates(x, y, bins)
+         return result.bad_rates, result.bins # Return original bins and re-calculated rates
+
+
     if idx == 0:
         del bins[1]
     elif idx == len(bad_rates) - 2:
@@ -74,53 +174,117 @@ def _merge_bins_chi(x: np.ndarray, y: np.ndarray,
 
 def _extract_bin_by_chi2(bins: List, idx: int, x: np.ndarray, y: np.ndarray) -> None:
     """Extract bin based on chi-square values"""
-    temp_bins = bins.copy()
-    del temp_bins[idx + 1]
-    temp_result = _bin_bad_rates(x, y, temp_bins)
-    chi_1 = _chi2(temp_result.bad_rates, temp_result.overall_rate or 0.0)
+    # The original _chi2 signature changed, need to pass all_bad and all_good.
+    # These are calculated within _bin_bad_rates.
+    # We need to calculate _bin_bad_rates for each potential merge scenario and then call _chi2.
 
-    temp_bins = bins.copy()
-    del temp_bins[idx + 2]
-    temp_result = _bin_bad_rates(x, y, temp_bins)
-    chi_2 = _chi2(temp_result.bad_rates, temp_result.overall_rate or 0.0)
+    # Scenario 1: Merge bin at idx and idx+1 (delete bin boundary at idx+1)
+    temp_bins_1 = bins.copy()
+    # Ensure idx + 1 is a valid index before deleting
+    if idx + 1 < len(temp_bins_1):
+        del temp_bins_1[idx + 1]
+        temp_result_1 = _bin_bad_rates(x, y, temp_bins_1)
+        # Ensure result is valid before calculating chi2
+        if temp_result_1 and temp_result_1.bad_rates:
+             chi_1 = _chi2(temp_result_1.bad_rates, temp_result_1.overall_bad, temp_result_1.overall_good)
+        else:
+             chi_1 = np.inf # Treat as worst chi2 if binning failed or no rates
+    else: # Cannot perform this merge scenario
+        chi_1 = np.inf
 
-    if chi_1 < chi_2:
-        del bins[idx + 1]
-    else:
-        del bins[idx + 2]
+
+    # Scenario 2: Merge bin at idx+1 and idx+2 (delete bin boundary at idx+2)
+    temp_bins_2 = bins.copy()
+    # Ensure idx + 2 is a valid index before deleting
+    if idx + 2 < len(temp_bins_2):
+         del temp_bins_2[idx + 2]
+         temp_result_2 = _bin_bad_rates(x, y, temp_bins_2)
+         # Ensure result is valid before calculating chi2
+         if temp_result_2 and temp_result_2.bad_rates:
+              chi_2 = _chi2(temp_result_2.bad_rates, temp_result_2.overall_bad, temp_result_2.overall_good)
+         else:
+              chi_2 = np.inf # Treat as worst chi2 if binning failed or no rates
+    else: # Cannot perform this merge scenario
+         chi_2 = np.inf
+
+
+    # Compare chi-square values and delete the boundary that results in a lower chi-square
+    # Lower chi-square indicates better grouping (more similar bad rates).
+    if chi_1 == np.inf and chi_2 == np.inf:
+        # Log warning: print("Warning: Neither chi-square merge scenario was possible or successful.")
+        # No merging possible from this state. Do nothing or handle explicitly.
+        pass # Keep original bins if neither merge worked
+    elif chi_1 < chi_2:
+        # Ensure idx + 1 is a valid index in the original bins before deleting
+        if idx + 1 < len(bins):
+            del bins[idx + 1]
+    elif chi_2 < np.inf: # Only delete if chi_2 was calculated successfully and is better
+         # Ensure idx + 2 is a valid index in the original bins before deleting
+         if idx + 2 < len(bins):
+              del bins[idx + 2]
+    # If chi_1 == chi_2, default to deleting idx + 1 or do nothing if both inf. The current if/elif handles this.
+
 
 
 def _merge_bins_iv(x: np.ndarray, y: np.ndarray,
                   bad_rates: List[BadRates], bins: List) -> Tuple[List[BadRates], List]:
     """Merge bins using IV method"""
-    idx = _find_index_of_diff_flag(bad_rates)
-    if idx == 0:
-        del bins[1]
-    elif idx == len(bad_rates) - 2:
-        del bins[len(bins) - 2]
-    else:
-        _extract_bin_by_iv(bins, idx, x, y)
+    # Ensure bad_rates has at least 2 items to proceed with merging
+    if len(bad_rates) <= 1:
+        # No merging possible or needed
+        result = _bin_bad_rates(x, y, bins) # Re-calculate in case of initial smoothing
+        return result.bad_rates, result.bins # Return original bins and re-calculated rates
 
+    idx = _find_index_of_diff_flag(bad_rates)
+    if idx is None: # Should be monotonic at this point if length > 1
+         result = _bin_bad_rates(x, y, bins)
+         return result.bad_rates, result.bins # Return original bins and re-calculated rates
+
+
+    # The original logic for idx == 0 or idx == len(bad_rates) - 2 assumes specific merges at ends.
+    # Let's rely on _extract_bin_by_iv to handle boundary cases based on comparing IVs.
+    _extract_bin_by_iv(bins, idx, x, y)
+
+    # Re-calculate bad rates and bins after merging
     result = _bin_bad_rates(x, y, bins)
+    # Note: _bin_bad_rates for numerical doesn't modify bins list structure, only content/order of BadRates.
+    # So returning result.bins (which is the input bins list) is fine here.
     return result.bad_rates, result.bins
 
 
 def _extract_bin_by_iv(bins: List, idx: int, x: np.ndarray, y: np.ndarray) -> None:
     """Extract bin based on IV values"""
     temp_bins = bins.copy()
-    del temp_bins[idx + 1]
-    temp_result = _bin_bad_rates(x, y, temp_bins)
-    iv_1 = sum(b.iv for b in temp_result.bad_rates)
+    # Ensure idx + 1 is a valid index before attempting deletion
+    if idx + 1 < len(temp_bins):
+        del temp_bins[idx + 1]
+        temp_result = _bin_bad_rates(x, y, temp_bins)
+        iv_1 = sum(b.iv for b in temp_result.bad_rates) if temp_result and temp_result.bad_rates else -np.inf # Assign low IV if merge failed
+    else:
+        iv_1 = -np.inf # Cannot perform this merge
 
     temp_bins = bins.copy()
-    del temp_bins[idx + 2]
-    temp_result = _bin_bad_rates(x, y, temp_bins)
-    iv_2 = sum(b.iv for b in temp_result.bad_rates)
-
-    if iv_1 > iv_2:
-        del bins[idx + 1]
+    # Ensure idx + 2 is a valid index before attempting deletion
+    if idx + 2 < len(temp_bins):
+        del temp_bins[idx + 2]
+        temp_result = _bin_bad_rates(x, y, temp_bins)
+        iv_2 = sum(b.iv for b in temp_result.bad_rates) if temp_result and temp_result.bad_rates else -np.inf # Assign low IV if merge failed
     else:
-        del bins[idx + 2]
+        iv_2 = -np.inf # Cannot perform this merge
+
+
+    # Keep the merge that results in higher total IV
+    if iv_1 == -np.inf and iv_2 == -np.inf:
+         # Log warning: print("Warning: Neither IV merge scenario was possible or successful.")
+         pass # Keep original bins
+    elif iv_1 >= iv_2: # If IVs are equal, prefer the first merge
+         # Ensure idx + 1 is valid before deleting from original bins
+         if idx + 1 < len(bins):
+              del bins[idx + 1]
+    elif iv_2 > -np.inf: # Only delete if iv_2 was calculated successfully and is better
+         # Ensure idx + 2 is valid before deleting from original bins
+         if idx + 2 < len(bins):
+              del bins[idx + 2]
 
 
 def _merge_bins_min_pct(x: np.ndarray, y: np.ndarray,
@@ -148,9 +312,20 @@ def _merge_bins_min_pct(x: np.ndarray, y: np.ndarray,
     else:
         del bins[idx + 1]
 
+    # For numerical, _bin_bad_rates does not reorder bins, so result.bins is just the input bins.
+    # For categorical, _bin_bad_rates sorts bad_rates by bad_rate, and result.bins extracts
+    # the bin lists in the new sorted order. We should use the sorted bins for subsequent steps.
     result = _bin_bad_rates(x, y, bins, cat=cat)
-    if cat:
-        bins = [b.bin for b in result.bad_rates]
+    # Ensure bins are updated with potentially sorted/restructured bins from result
+    updated_bins_list = []
+    for br in result.bad_rates:
+        if isinstance(br.bin, list):
+            updated_bins_list.append(br.bin)
+        else:
+             # This shouldn't happen for categorical bins typically, but as a fallback
+             updated_bins_list.append([br.bin])
+    bins = updated_bins_list
+
     return result.bad_rates, bins
 
 
@@ -160,6 +335,8 @@ class BinBadRatesResult:
     bad_rates: List[BadRates]
     overall_rate: Optional[float] = None
     bins: List = field(default_factory=list)
+    overall_good: int = 0 # Added overall good count
+    overall_bad: int = 0 # Added overall bad count
 
 
 def _calc_stats(x: np.ndarray, y: np.ndarray, idx: int,
@@ -237,45 +414,79 @@ def _calc_stats(x: np.ndarray, y: np.ndarray, idx: int,
 def _bin_bad_rates(x: np.ndarray, y: np.ndarray, bins: List,
                    cat: bool = False, refit_fl: bool = False) -> BinBadRatesResult:
     """Calculate bad rates for all bins"""
+    # Ensure y is not empty before summing
+    if len(y) == 0:
+        # Log warning: print("Warning: Target variable y is empty in _bin_bad_rates.")
+        return BinBadRatesResult(bad_rates=[], bins=bins, overall_good=0, overall_bad=0)
+
     all_bad_sum = int(y.sum())
     all_total_sum = len(y)
     all_good_sum = all_total_sum - all_bad_sum
 
     # Handle edge case: if all_bad_sum or all_good_sum is 0 for the entire dataset,
-    # this can lead to issues in _calc_stats's WOE/IV if not handled.
-    # _calc_stats has smoothing for individual bins, but global all_bad/all_good might also be zero.
-    # If all_bad_sum is 0, all y are 0. If all_good_sum is 0, all y are 1.
-    # This is a rare scenario for a typical binary target, but good to be aware of.
-    # The division protection in _calc_stats (term_good/term_bad) should handle this.
+    # WOE/IV for all bins should be 0 as there's no separation ability.
+    # _calc_stats already handles division by zero for term_good/term_bad,
+    # but the overall IV will also be 0 if either all_bad_sum or all_good_sum is 0.
+    # Let's just proceed; _calc_stats and IV summation will correctly result in 0.0.
 
     max_idx = len(bins) if cat or refit_fl else len(bins) - 1
 
-    bad_rates = [
-        _calc_stats(x, y, idx, all_bad_sum, all_good_sum, bins, cat, refit_fl)
-        for idx in range(max_idx)
-    ]
+    # Handle case where no bins are generated (e.g., empty or all NaN input)
+    if max_idx <= 0:
+         # Log warning: print("Warning: No bins generated in _bin_bad_rates.")
+         return BinBadRatesResult(bad_rates=[], bins=bins, overall_good=all_good_sum, overall_bad=all_bad_sum)
+
+    try:
+        bad_rates = [
+            _calc_stats(x, y, idx, all_bad_sum, all_good_sum, bins, cat, refit_fl)
+            for idx in range(max_idx)
+        ]
+    except Exception as e:
+        logger.warning(f"Error calculating stats in _bin_bad_rates: {e}")
+        return BinBadRatesResult(bad_rates=[], bins=bins, overall_good=all_good_sum, overall_bad=all_bad_sum)
+
+    # Remove any None results from _calc_stats if it returns None in edge cases (currently it doesn't)
+    # bad_rates = [br for br in bad_rates if br is not None]
+
 
     if cat:
+        # For categorical, sort bins by bad rate as part of standard procedure
         bad_rates.sort(key=lambda x: x.bad_rate)
 
-    overall_rate = None if cat else sum(b.bad for b in bad_rates) / sum(b.total for b in bad_rates)
+    # Recalculate overall_rate based on the *final* bad_rates list content
+    # This is useful if some bins were skipped or filtered, though the current _calc_stats shouldn't do that.
+    total_sum_in_bad_rates = sum(br.total for br in bad_rates)
+    bad_sum_in_bad_rates = sum(br.bad for br in bad_rates)
+    overall_rate = bad_sum_in_bad_rates / total_sum_in_bad_rates if total_sum_in_bad_rates > 0 else 0.0
 
     return BinBadRatesResult(
         bad_rates=bad_rates,
         overall_rate=overall_rate,
-        bins=bins
+        bins=bins, # Keep the input bins structure for numerical
+        overall_good=all_good_sum, # Return total good counts
+        overall_bad=all_bad_sum # Return total bad counts
     )
 
 
 def _calc_max_bins(bins: List, max_bins_percentage: float) -> int: # Renamed max_bins to max_bins_percentage
     """Calculate maximum number of bins based on a percentage of current bins, with a minimum fallback."""
+    # The 'bins' argument to this function, when called from _initialize_numerical_bins,
+    # is `list(np.unique(x[~pd.isna(x)]))`. So it's a list of unique values.
+    # When called from _initialize_categorical_bins, it's `bins` which is `[[val], [val], ...]`.
+    # In both cases, len(bins) is the number of distinct initial bins or unique values.
     if not isinstance(bins, list):
         # Log: print("Warning: 'bins' argument to _calc_max_bins was not a list. Returning MIN_BINS_FALLBACK.")
         return MIN_BINS_FALLBACK
     if not isinstance(max_bins_percentage, float) or not (0.0 < max_bins_percentage <= 1.0) :
-        # Log: print(f"Warning: max_bins_percentage '{max_bins_percentage}' is not a float strictly between 0 and 1. Defaulting to MIN_BINS_FALLBACK.")
+         # Log: print(f"Warning: max_bins_percentage '{max_bins_percentage}' is not a float strictly between 0 and 1. Defaulting to MIN_BINS_FALLBACK.")
         return MIN_BINS_FALLBACK
-    return max(int(len(bins) * max_bins_percentage), MIN_BINS_FALLBACK)
+
+    # Calculate the target number of bins based on the percentage of current 'bins' count
+    target_bins = int(len(bins) * max_bins_percentage)
+
+    # Ensure the result is at least MIN_BINS_FALLBACK (e.g., 20)
+    # and not more than the original number of bins if max_bins_percentage is near 1.0
+    return max(target_bins, MIN_BINS_FALLBACK)
 
 
 def prepare_data(data: pd.DataFrame,
@@ -331,35 +542,52 @@ def _cat_binning(x: np.ndarray, y: np.ndarray,
                  max_bins: Union[int, float],
                  diff_woe_threshold: float) -> Tuple[List[BadRates], Optional[str]]:
     """Perform categorical binning"""
-    missing_bin = None
-    x, data_type = _prepare_categorical_data(x)
-    bins, bad_rates = _initialize_categorical_bins(x, y, max_bins)
+    missing_bin: Optional[str] = None # Initialize missing_bin to None
+    x_prepared, data_type = _prepare_categorical_data(x)
 
-    if len(y[pd.isna(x)]) > 0:
-        x, bins, bad_rates, missing_bin = _handle_categorical_missing_values(x, y, bins, bad_rates, data_type)
+    # Handle missing values BEFORE initial binning if they exist in the original data.
+    # This ensures missing values are part of the data used for calculating initial bad rates and quantiles.
+    # The missing values will be imputed/represented by a placeholder.
+    if pd.isna(x).any(): # Check if there are *any* missing values in original x
+        x_prepared, missing_val = _impute_categorical_missing_values(x_prepared, data_type) # Impute, get placeholder
 
-    if len(bins) <= 2:
+    # Proceed with binning on the data where NaNs have been replaced by a placeholder
+    bins, bad_rates = _initialize_categorical_bins(x_prepared, y, max_bins)
+
+    # Determine the missing_bin strategy based on the placeholder bin
+    if pd.isna(x).any(): # Only determine missing_bin if there were missing values
+        missing_bin = _determine_missing_bin_strategy(bins, bad_rates, x_prepared, y)
+
+
+    if len(bins) <= 1: # If after initialization and potentially missing handling, we have 1 or 0 bins
+        # If there's only one bin, it's likely the missing bin or the only unique value.
+        # Return whatever rates were calculated for this single bin.
         return bad_rates, missing_bin
 
-    bad_rates, bins = _enforce_diff_woe_categorical(x, y, bad_rates, bins, diff_woe_threshold)
 
-    if len(bins) <= 2:
-        return bad_rates, missing_bin
-
-    # Resolve max_bins if it's a percentage
+    # Resolve max_bins if it's a percentage AFTER initial binning based on unique values
     if isinstance(max_bins, float) and max_bins < 1.0: # type: ignore
-        # Assuming `bins` here refers to the current state of categorical bins (List[List[Union[str,float]]])
-        # _calc_max_bins expects a list of bin boundaries or similar, not list of lists of values.
-        # For categorical, len(bins) is the current number of bins.
+        # `bins` is now List[List[Union[str, float]]]
         actual_max_bins = _calc_max_bins(bins, max_bins) # type: ignore
     elif isinstance(max_bins, int):
         actual_max_bins = max_bins
-    else: # Fallback or error, for now, let's assume it resolves to a sensible integer.
-          # This case might need more robust handling depending on expected inputs for max_bins.
-        actual_max_bins = len(bins) # Default to current number of bins if type is unexpected.
+    else: # Fallback, should not happen with current validation
+        actual_max_bins = len(bins) # Default to current number of bins
 
+    # Ensure `bad_rates` is updated based on current `bins` before applying merging logic
+    # (This is handled within the enforce functions by calling _bin_bad_rates)
 
-    bad_rates, bins = _enforce_min_pct_group_categorical(x, y, bad_rates, bins, min_pct_group, actual_max_bins)
+    # Enforce difference WOE threshold merging
+    # _enforce_diff_woe_categorical updates bad_rates and bins
+    bad_rates, bins = _enforce_diff_woe_categorical(x_prepared, y, bad_rates, bins, diff_woe_threshold)
+
+    if len(bins) <= 1: # Check again after WOE merging
+        return bad_rates, missing_bin
+
+    # Enforce minimum percentage group threshold and max_bins
+    # _enforce_min_pct_group_categorical updates bad_rates and bins
+    bad_rates, bins = _enforce_min_pct_group_categorical(x_prepared, y, bad_rates, bins, min_pct_group, actual_max_bins)
+
 
     return bad_rates, missing_bin
 
@@ -392,7 +620,7 @@ def _enforce_diff_woe_categorical(x: np.ndarray, y: np.ndarray, bad_rates: List[
             bins = processed_bins
         else: # If idx is the last possible merge target, this logic might be flawed or an edge case
             break # Avoid index out of bounds
-    return bad_rates, bins
+    return x_prepared, data_type
 
 
 def _prepare_categorical_data(x: np.ndarray) -> Tuple[np.ndarray, str]:
@@ -404,6 +632,51 @@ def _prepare_categorical_data(x: np.ndarray) -> Tuple[np.ndarray, str]:
         x_prepared = x.astype(str)
         data_type = "object"
     return x_prepared, data_type
+
+
+def _impute_categorical_missing_values(x: np.ndarray, data_type: str) -> Tuple[np.ndarray, Union[str, float]]:
+    """Imputes missing values for categorical features with a placeholder."""
+    missing_val = "Missing" if data_type == "object" else -1.0 # Use float for consistency if numeric
+    # Create a copy to avoid modifying the original array outside this function's scope
+    x_imputed = x.copy()
+    x_imputed[pd.isna(x_imputed)] = missing_val
+    return x_imputed, missing_val
+
+
+def _determine_missing_bin_strategy(bins: List[List[Union[str, float]]], bad_rates: List[BadRates], x: np.ndarray, y: np.ndarray) -> Optional[str]:
+    """
+    Determines the missing_bin strategy ('first', 'last', or None) after binning.
+    Assumes missing values were imputed with a placeholder *before* initial binning.
+    Checks where the placeholder value ended up in the sorted bins.
+    """
+    # Determine the placeholder value that was used
+    # This is a bit tricky without knowing the placeholder directly.
+    # We can try to infer it based on the data type that was used for imputation.
+    # Assuming -1.0 for numeric-like categories and "Missing" for object.
+    # This logic needs to be consistent with _impute_categorical_missing_values.
+    inferred_data_type = "object" if np.issubdtype(x.dtype, np.object_) else "float" # Check dtype of imputed x
+    placeholder_val = "Missing" if inferred_data_type == "object" else -1.0
+
+    # Check if the placeholder value is present in any of the bins
+    placeholder_bin_index = -1
+    for i, bin_list in enumerate(bins):
+        if placeholder_val in bin_list:
+            placeholder_bin_index = i
+            break
+
+    if placeholder_bin_index == -1:
+        # Log warning: print(f"Warning: Missing value placeholder {placeholder_val} not found in any bin after binning.")
+        return None # Missing bin not identified in the bins
+
+    # Now, determine if this bin is the first or last among the *sorted* bad_rates.
+    # The `bins` list should correspond to the order in `bad_rates` if `_bin_bad_rates` sorts them.
+    if placeholder_bin_index == 0:
+        return "first"
+    elif placeholder_bin_index == len(bins) - 1:
+        return "last"
+    else:
+        # Log warning: print(f"Warning: Missing value placeholder bin is not the first or last bin (index {placeholder_bin_index}/{len(bins)-1}). Cannot determine simple strategy.")
+        return None # Cannot assign a simple first/last strategy if missing bin is in the middle
 
 
 def _initialize_categorical_bins(x: np.ndarray, y: np.ndarray, max_bins: Union[int, float]) -> Tuple[List[List[Union[str, float]]], List[BadRates]]:
@@ -616,8 +889,27 @@ def cat_processing(x: pd.Series,
         diff_woe_threshold=diff_woe_threshold,
     )
 
+    # Convert BadRates objects to dictionaries for serialization
+    # Handle case when bad_rates is empty
+    if not bad_rates:
+        bad_rates_dicts = []
+    else:
+        # Convert each BadRates object to a dictionary with all fields
+        bad_rates_dicts = []
+        for br in bad_rates:
+            bad_rates_dict = {
+                "bin": br.bin,
+                "total": br.total,
+                "bad": br.bad,
+                "pct": br.pct,
+                "bad_rate": br.bad_rate,
+                "woe": br.woe,
+                "iv": br.iv
+            }
+            bad_rates_dicts.append(bad_rates_dict)
+
     return {
-        x.name: bad_rates,
+        x.name: bad_rates_dicts,
         "missing_bin": missing_bin,
         "type_feature": "cat"
     }
@@ -631,27 +923,43 @@ def _num_binning(x: np.ndarray,
                  merge_type: str) -> Tuple[List[BadRates], Optional[str]]:
     """Perform numeric binning"""
     missing_bin = None
-    non_na_x = x[~pd.isna(x)] # Added this line
 
-    bins, bad_rates = _initialize_numerical_bins(x, y, max_bins)
+    # Make a copy of the input to avoid modifying the original
+    x_copy = x.copy()
+    non_na_x = x_copy[~pd.isna(x_copy)]
 
-    if len(y[pd.isna(x)]) > 0:
-        x, bins, bad_rates, missing_bin = _handle_numerical_missing_values(x, y, bins, bad_rates, non_na_x)
+    # Check if there's enough non-missing data
+    if len(non_na_x) == 0:
+        # All values are missing, create a single bin for missing values
+        bins = [np.NINF, np.inf]
+        result = _bin_bad_rates(x_copy, y, bins)
+        return result.bad_rates, "first"  # All values go to the first bin
+
+    # Initialize bins and bad rates
+    bins, bad_rates = _initialize_numerical_bins(x_copy, y, max_bins)
+
+    # Handle missing values if present
+    if np.isnan(x_copy).any():
+        x_copy, bins, bad_rates, missing_bin = _handle_numerical_missing_values(x_copy, y, bins, bad_rates, non_na_x)
+
+    # Skip further processing if we have 2 or fewer bins
+    if len(bad_rates) <= 2:
+        return bad_rates, missing_bin
+
+    # Ensure monotonicity of bad rates
+    bad_rates, bins = _ensure_monotonicity(x_copy, y, bad_rates, bins, merge_type)
 
     if len(bad_rates) <= 2:
         return bad_rates, missing_bin
 
-    bad_rates, bins = _ensure_monotonicity(x, y, bad_rates, bins, merge_type)
+    # Enforce minimum percentage group
+    bad_rates, bins = _enforce_min_pct_group(x_copy, y, bad_rates, bins, min_pct_group)
 
     if len(bad_rates) <= 2:
         return bad_rates, missing_bin
 
-    bad_rates, bins = _enforce_min_pct_group(x, y, bad_rates, bins, min_pct_group)
-
-    if len(bad_rates) <= 2:
-        return bad_rates, missing_bin
-
-    bad_rates, bins = _enforce_diff_woe(x, y, bad_rates, bins, diff_woe_threshold)
+    # Enforce difference in WOE values
+    bad_rates, bins = _enforce_diff_woe(x_copy, y, bad_rates, bins, diff_woe_threshold)
 
     return bad_rates, missing_bin
 
@@ -667,47 +975,78 @@ def _enforce_diff_woe(x: np.ndarray, y: np.ndarray, bad_rates: List[BadRates], b
 
 def _initialize_numerical_bins(x: np.ndarray, y: np.ndarray, max_bins: Union[int, float]) -> Tuple[List, List[BadRates]]:
     """Initializes numerical bins based on unique values or quantiles."""
-    if max_bins < 1:
-        max_bins = _calc_max_bins(list(np.unique(x[~pd.isna(x)])), max_bins) # type: ignore
-
+    # Handle case where all values are NaN
     non_na_x = x[~pd.isna(x)]
+    if len(non_na_x) == 0:
+        bins = [np.NINF, np.inf]  # Create a single bin for all values
+        result = _bin_bad_rates(x, y, bins)
+        return bins, result.bad_rates
+
+    if isinstance(max_bins, float) and max_bins < 1:
+        max_bins = _calc_max_bins(list(np.unique(non_na_x)), max_bins) # type: ignore
+
     unique_vals = np.unique(non_na_x)
 
+    # Create initial bins based on unique values or quantiles
     if len(unique_vals) > max_bins: # type: ignore
-        bins = [np.NINF] + [
-            np.nanquantile(x, q/max_bins) # type: ignore
-            for q in range(1, int(max_bins)) # type: ignore
-        ]
-        bins = list(np.unique(bins))
-        if len(bins) == 2 and len(unique_vals) > 1: # Check if unique_vals has at least 2 elements
-            bins.append(unique_vals[1])
+        try:
+            bins = [np.NINF] + [
+                np.quantile(non_na_x, q/max_bins) # Use quantile instead of nanquantile for non-NaN data
+                for q in range(1, int(max_bins)) # type: ignore
+            ]
+            bins = list(np.unique(bins))
+            if len(bins) == 2 and len(unique_vals) > 1:
+                bins.append(unique_vals[1])
+        except Exception as e:
+            logger.warning(f"Error creating quantile bins: {e}")
+            bins = [np.NINF, np.inf]  # Fallback to a single bin
     else:
         bins = [np.NINF] + sorted(list(unique_vals)) # Convert unique_vals to list before sorting
+
     bins.append(np.inf)
 
     result = _bin_bad_rates(x, y, bins)
     bad_rates = result.bad_rates
 
-    if pd.isna(bad_rates[0].bad_rate) and len(bad_rates) > 2:
-        del bins[1]
+    # Handle NaN bad_rates in the first bin
+    if bad_rates and len(bad_rates) > 1 and (pd.isna(bad_rates[0].bad_rate) or bad_rates[0].bad_rate is None) and len(bins) > 2:
+        del bins[1] # Merge the first bin with the second
         result = _bin_bad_rates(x, y, bins)
         bad_rates = result.bad_rates
+
     return bins, bad_rates
 
 
 def _handle_numerical_missing_values(x: np.ndarray, y: np.ndarray, bins: List, bad_rates: List[BadRates], non_na_x: np.ndarray) -> Tuple[np.ndarray, List, List[BadRates], str]:
     """Handles missing values for numerical features."""
-    missing_bin: Optional[str] = None
+    missing_bin = None
+
+    # Check if there are any missing values to handle
+    if not pd.isna(x).any() or len(y[pd.isna(x)]) == 0:
+        # No missing values to handle
+        return x, bins, bad_rates, missing_bin
+
+    # Calculate bad rate for missing values
     na_bad_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
+
+    # If no non-NaN values, handle as a special case
+    if len(non_na_x) == 0:
+        x_copy = x.copy()
+        x_copy[pd.isna(x)] = -999999.0  # Use a placeholder value
+        missing_bin = "first"
+        result = _bin_bad_rates(x_copy, y, bins)
+        return x_copy, bins, result.bad_rates, missing_bin
 
     if len(bad_rates) == 2: # If there are only two bins (excluding potential missing bin)
         # Determine if missing values are more similar to the lower or upper bin
         if na_bad_rate < bad_rates[1].bad_rate: # Compare with the second bin's bad rate
-            x = np.nan_to_num(x, nan=np.amin(non_na_x) - 1) # Impute with a value smaller than min
+            x_copy = x.copy()
+            x_copy = np.nan_to_num(x_copy, nan=np.amin(non_na_x) - 1) # Impute with a value smaller than min
             bins = [np.NINF, np.amin(non_na_x)] + bins[1:] # Adjust bins accordingly
             missing_bin = "first"
         else:
-            x = np.nan_to_num(x, nan=np.amax(non_na_x) + 1) # Impute with a value larger than max
+            x_copy = x.copy()
+            x_copy = np.nan_to_num(x_copy, nan=np.amax(non_na_x) + 1) # Impute with a value larger than max
             bins = bins[:2] + [np.amax(non_na_x), np.inf] # Adjust bins accordingly
             missing_bin = "last"
     else:
@@ -716,16 +1055,17 @@ def _handle_numerical_missing_values(x: np.ndarray, y: np.ndarray, bins: List, b
         avg_first_half = np.mean([b.bad_rate for b in bad_rates[:mid] if pd.notna(b.bad_rate)]) # Ensure not to include NaN in mean
         avg_second_half = np.mean([b.bad_rate for b in bad_rates[mid:] if pd.notna(b.bad_rate)]) # Ensure not to include NaN in mean
 
+        x_copy = x.copy()
         if abs(na_bad_rate - avg_first_half) < abs(na_bad_rate - avg_second_half):
-            x = np.nan_to_num(x, nan=np.amin(non_na_x)) # Impute with min value
+            x_copy = np.nan_to_num(x_copy, nan=np.amin(non_na_x)) # Impute with min value
             missing_bin = "first"
         else:
-            x = np.nan_to_num(x, nan=np.amax(non_na_x)) # Impute with max value
+            x_copy = np.nan_to_num(x_copy, nan=np.amax(non_na_x)) # Impute with max value
             missing_bin = "last"
 
-    result = _bin_bad_rates(x, y, bins)
+    result = _bin_bad_rates(x_copy, y, bins)
     bad_rates = result.bad_rates
-    return x, bins, bad_rates, missing_bin # type: ignore
+    return x_copy, bins, bad_rates, missing_bin
 
 
 def _ensure_monotonicity(x: np.ndarray, y: np.ndarray, bad_rates: List[BadRates], bins: List, merge_type: str) -> Tuple[List[BadRates], List]:
@@ -743,6 +1083,27 @@ def _enforce_min_pct_group(x: np.ndarray, y: np.ndarray, bad_rates: List[BadRate
     return bad_rates, bins
 
 
+def _impute_numerical_missing_values(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, Union[float, str]]:
+    """Imputes numerical missing values and returns the imputed value."""
+    missing_val = np.nan # Start with original NaNs
+    x_imputed = x.copy() # Work on a copy
+
+    na_mask = pd.isna(x)
+    if not na_mask.any():
+        # Log info: print("No missing values to impute.")
+        return x_imputed, np.nan # Return copy and NaN as no imputation happened
+
+    non_na_x = x[~na_mask]
+
+    if non_na_x.size == 0:
+        # All values are NaN
+        x_imputed[:] = -999999.0  # Use a large negative number as placeholder
+        return x_imputed, -999999.0
+
+    # For regular cases with some non-NaN values
+    return x_imputed, np.nan
+
+
 def num_processing(x: pd.Series,
                   y: Union[np.ndarray, pd.Series],
                   min_pct_group: float,
@@ -750,6 +1111,7 @@ def num_processing(x: pd.Series,
                   diff_woe_threshold: float,
                   merge_type: str) -> Dict:
     """Process numeric feature"""
+    # Pass the original series with potential NaNs to _num_binning
     bad_rates, missing_bin = _num_binning(
         x=x.values, # type: ignore
         y=y,
@@ -759,8 +1121,27 @@ def num_processing(x: pd.Series,
         merge_type=merge_type,
     )
 
+    # Convert BadRates objects to dictionaries for serialization
+    # Handle case when bad_rates is empty
+    if not bad_rates:
+        bad_rates_dicts = []
+    else:
+        # Convert each BadRates object to a dictionary with all fields
+        bad_rates_dicts = []
+        for br in bad_rates:
+            bad_rates_dict = {
+                "bin": br.bin,
+                "total": br.total,
+                "bad": br.bad,
+                "pct": br.pct,
+                "bad_rate": br.bad_rate,
+                "woe": br.woe,
+                "iv": br.iv
+            }
+            bad_rates_dicts.append(bad_rates_dict)
+
     return {
-        x.name: bad_rates,
+        x.name: bad_rates_dicts,
         "missing_bin": missing_bin,
         "type_feature": "num"
     }
@@ -770,22 +1151,62 @@ def _refit_woe_dict(x: np.ndarray,
                     y: np.ndarray,
                     bins: List,
                     type_feature: str,
-                    missing_bin: str) -> List[BadRates]:
+                    missing_bin: Optional[str]) -> List[BadRates]:
     """Refit WOE dictionary"""
     cat = type_feature == "cat"
+    x_copy = x.copy() # Refit should work on a copy of the input array
 
-    if cat:
-        na_value = (-1.0 if np.issubdtype(x.dtype, np.floating)
-                   or np.issubdtype(x.dtype, np.integer) else "Missing")
-        x[pd.isna(x)] = na_value
-    elif missing_bin == "first":
-        na_value = np.nanmin(x[~np.isnan(x)]) - 1 # Use np.nanmin to handle potential NaNs after imputation
-        x[np.isnan(x)] = na_value
-    elif missing_bin == "last":
-        na_value = np.nanmax(x[~np.isnan(x)]) + 1 # Use np.nanmax to handle potential NaNs after imputation
-        x[np.isnan(x)] = na_value
+    # Handle missing values based on the saved missing_bin strategy from the original fit
+    # This assumes NaNs were handled during the original binning, and this strategy
+    # dictates where original NaNs *would* have been grouped or how they were imputed.
+    # For refit, we need to re-apply that logic or simply preserve the mapping for NaNs.
+    # A simpler approach for refit might be to identify NaNs and map them directly to the WOE
+    # of the bin designated by missing_bin, if that WOE is stored somewhere.
+    # However, the `refit` function in `WOETransformer` recalculates bad rates for the *existing* bins.
+    # So, we just need to make sure NaNs in the *refit data* `x` fall into a bin.
+    # The simplest way is to impute NaNs in `x_copy` using values that will place them
+    # into the designated 'missing_bin' equivalent.
 
-    result = _bin_bad_rates(x, y, bins, cat=cat, refit_fl=True)
+    if pd.isna(x_copy).any():
+        na_mask = pd.isna(x_copy)
+        non_na_x_refit = x_copy[~na_mask]
+
+        if cat:
+            na_value = (-1.0 if np.issubdtype(x_copy.dtype, np.floating)
+                       or np.issubdtype(x_copy.dtype, np.integer) else "Missing")
+            # In categorical refit, the 'missing' category (e.g. -1.0 or 'Missing') is expected
+            # to be one of the values within the saved `bins` list for that feature.
+            # So we just need to impute NaNs with this placeholder.
+            x_copy[na_mask] = na_value
+        elif missing_bin == "first":
+            # Impute NaNs with a value smaller than the minimum in the refit non-NA data
+            # to ensure they fall into the first bin boundary during refit.
+            # Handle empty non_na_x_refit case (all NaNs in refit data)
+            min_val = np.nanmin(non_na_x_refit) if non_na_x_refit.size > 0 and np.isfinite(np.nanmin(non_na_x_refit)) else -1e9 # Use a large neg number if non_na_x is empty or all inf/-inf
+            na_value = min_val - 1 # Use a value less than min
+            x_copy[na_mask] = na_value
+        elif missing_bin == "last":
+             # Impute NaNs with a value larger than the maximum in the refit non-NA data
+             # to ensure they fall into the last bin boundary during refit.
+             # Handle empty non_na_x_refit case
+            max_val = np.nanmax(non_na_x_refit) if non_na_x_refit.size > 0 and np.isfinite(np.nanmax(non_na_x_refit)) else 1e9 # Use a large pos number
+            na_value = max_val + 1 # Use a value greater than max
+            x_copy[na_mask] = na_value
+        # If missing_bin is None for numerical, NaNs might not have been handled explicitly in fit,
+        # or the strategy wasn't recorded. In that case, we might just impute with median/mean or keep NaNs
+        # if the binning logic handles NaNs outside specific bins.
+        # Given the current num_processing imputes NaNs, let's ensure consistency.
+        # If missing_bin is None, this implies no specific strategy was recorded from fit.
+        # The safest approach for refit is to impute with a value that doesn't disrupt existing bins,
+        # like median/mean, or impute based on overall bad rate (closer to first/last).
+        # Let's stick to the recorded missing_bin if available. If None, imputation might not be desired here.
+        # Or maybe imputation to median/mean is a default if no missing_bin?
+        # For now, only impute if missing_bin is 'first' or 'last'. If None, assume NaNs were not specially handled in fit.
+
+    # Now re-calculate bad rates using the potentially imputed x_copy and the fixed bins.
+    # For refit, _bin_bad_rates calculates stats for each bin based on the new x_copy and y.
+    # The `bins` argument here is the list of bin boundaries/categories from the original fit.
+    result = _bin_bad_rates(x_copy, y, bins, cat=cat, refit_fl=True)
     return result.bad_rates
 
 
@@ -793,7 +1214,7 @@ def refit(x: pd.Series,
           y: np.ndarray,
           bins: List,
           type_feature: str,
-          missing_bin: str) -> Dict:
+          missing_bin: Optional[str]) -> Dict:
     """Refit model"""
     bad_rates = _refit_woe_dict(
         x=x.values, # type: ignore
@@ -803,8 +1224,27 @@ def refit(x: pd.Series,
         missing_bin=missing_bin,
     )
 
+    # Convert BadRates objects to dictionaries for serialization
+    # Handle case when bad_rates is empty
+    if not bad_rates:
+        bad_rates_dicts = []
+    else:
+        # Convert each BadRates object to a dictionary with all fields
+        bad_rates_dicts = []
+        for br in bad_rates:
+            bad_rates_dict = {
+                "bin": br.bin,
+                "total": br.total,
+                "bad": br.bad,
+                "pct": br.pct,
+                "bad_rate": br.bad_rate,
+                "woe": br.woe,
+                "iv": br.iv
+            }
+            bad_rates_dicts.append(bad_rates_dict)
+
     return {
-        x.name: bad_rates,
+        x.name: bad_rates_dicts,
         "missing_bin": missing_bin,
         "type_feature": type_feature
     }

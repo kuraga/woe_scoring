@@ -56,18 +56,10 @@ def _generate_categorical_case_statements(var_name: str, woe_transformation_dict
         for cat in categories_in_bin:
             if isinstance(cat, str):
                 # Replace single quotes in string categories to avoid SQL injection/error
-                formatted_categories.append(f"'{str(cat).replace(\"'\", \"''\")}'")
+                formatted_categories.append("'{str(cat).replace(\"'\", \"''\")}'")
             else: # Numeric, boolean, etc.
                 formatted_categories.append(str(cat))
 
-        # Handle special placeholder names if they appear as actual categories
-        # (e.g. if "Missing" string or -1.0 number were actual categories in a bin)
-        # This part of the original code for SQL generation needs careful review
-        # based on how binning module actually creates bin representations for "Missing"
-        # For now, assume `bin_info['bin']` contains the direct values.
-        # Original code: bin_str = str(bin_info['bin']).replace("[", "(").replace("]", ")")
-        # bin_str = bin_str.replace(", -1", "").replace(", Missing", "") -> this removal seems problematic.
-        # The new approach below forms proper ('val1', 'val2')
 
         if not formatted_categories: # Skip if bin is empty for some reason
             continue

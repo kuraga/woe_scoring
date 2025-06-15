@@ -4,8 +4,6 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
-# functools.lru_cache can be added if this function is called with same heavy computation repeatedly
-# from functools import lru_cache
 
 # @lru_cache(maxsize=128) # Add if performance profiling suggests it's beneficial
 def calculate_score(data: Union[pd.DataFrame, np.ndarray],

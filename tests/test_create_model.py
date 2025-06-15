@@ -2,12 +2,12 @@ import pytest
 import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock, PropertyMock
+from typing import Dict
 
-from woe_scoring.core.main import CreateModel # Direct import for clarity in tests
-from woe_scoring.core.model.model import Model # Needed for type checking if not mocking entirely
-from woe_scoring.core.model.selector import FeatureSelector # Needed for type checking
+from woe_scoring.core.main import CreateModel
+from woe_scoring.core.model.model import Model
+from woe_scoring.core.model.selector import FeatureSelector
 
-# Sample data fixtures (can be moved to conftest.py if shared)
 @pytest.fixture
 def sample_woe_data():
     return pd.DataFrame({
@@ -57,7 +57,7 @@ def test_createmodel_initialization_custom_params(sample_woe_rules):
         selection_method='iv', model_type='statsmodels', max_vars=10,
         special_cols=['id'], unused_cols=['temp'], n_jobs=2,
         gini_threshold=10.0, iv_threshold=0.1, corr_threshold=0.6,
-        min_pct_group=0.1, random_state=42, class_weight=None,
+        min_pct_group=0.1, random_state=42, class_weight="",
         direction='backward', cv=5, l1_exp_scale=3, l1_grid_size=10,
         scoring='accuracy', woe_transformer_rules=sample_woe_rules,
         feature_names=['feat1', 'feat2', 'feat3']

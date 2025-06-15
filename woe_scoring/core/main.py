@@ -1,4 +1,4 @@
-from typing import List, Union, Optional, Any
+from typing import List, Union, Optional, Any, Dict
 import json
 import numpy as np
 import pandas as pd
@@ -222,21 +222,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
 
         is_categorical = original_feature_name in self.cat_features
         for bin_info_item in woe_bins_list: # woe_bins_list contains BadRates objects or dicts
-            # Ensure bin_info_item is a dict if it comes directly from JSON, or access attributes if it's BadRates
-            if isinstance(bin_info_item, dict):
-                bin_data_for_apply = bin_info_item
-            # If woe_bins_list can contain BadRates objects (e.g. if not from JSON)
-            # This part depends on the actual structure of woe_bins_list elements.
-            # Assuming they are dicts as per current load_woe_iv_dict and processing.
-            # If they were BadRates dataclass objects:
-            # elif hasattr(bin_info_item, 'bin') and hasattr(bin_info_item, 'woe'):
-            #    bin_data_for_apply = {"bin": bin_info_item.bin, "woe": bin_info_item.woe}
-            else:
-                self.logger.warning(f"Skipping unexpected item in woe_bins_list for {original_feature_name}: {bin_info_item}")
-                continue
-
+            # Pass bin_info_item directly to _apply_single_bin_woe which now handles both types
             self._apply_single_bin_woe(data_df, original_feature_name, new_woe_col_name,
-                                       bin_data_for_apply, is_categorical)
+                                      bin_info_item, is_categorical)
 
         self._handle_missing_values(data_df, original_feature_name, new_woe_col_name, woe_bins_list, feature_woe_rules)
 
@@ -244,8 +232,13 @@ class WOETransformer(BaseEstimator, TransformerMixin):
     def _apply_single_bin_woe(self, data_df: pd.DataFrame, original_feature_name: str, new_woe_col_name: str,
                                 bin_info: Dict, is_categorical: bool) -> None:
         """Applies WOE for a single bin to the DataFrame."""
-        current_bin_values = bin_info.get("bin")
-        current_woe = bin_info.get("woe")
+        # Get bin values and WOE, handling both dictionary and BadRates object
+        if hasattr(bin_info, 'bin') and hasattr(bin_info, 'woe'):  # It's a BadRates object
+            current_bin_values = bin_info.bin
+            current_woe = bin_info.woe
+        else:  # It's a dictionary
+            current_bin_values = bin_info.get("bin")
+            current_woe = bin_info.get("woe")
 
         if current_bin_values is None or current_woe is None:
             self.logger.warning(f"Malformed bin_info {bin_info} for feature {original_feature_name}. Skipping this bin.")
@@ -296,21 +289,45 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             self.logger.warning(f"No WOE bins available for {new_woe_col_name} (feature: {original_feature_name}), "
                                 f"missing/unmapped values cannot be mapped via bin strategy.")
         elif missing_bin_strategy == "first":
-            if woe_bins_list[0] and "woe" in woe_bins_list[0]: # Check if first bin exists and has WOE
-                fill_woe_value = woe_bins_list[0]["woe"]
+            if woe_bins_list[0]:
+                # Handle both dict and BadRates object
+                if hasattr(woe_bins_list[0], 'woe'):
+                    fill_woe_value = woe_bins_list[0].woe
+                elif isinstance(woe_bins_list[0], dict) and "woe" in woe_bins_list[0]:
+                    fill_woe_value = woe_bins_list[0]["woe"]
+                else:
+                    self.logger.warning(f"Missing strategy 'first' for {new_woe_col_name} but first bin has no WOE.")
             else:
-                self.logger.warning(f"Missing strategy 'first' for {new_woe_col_name} but first bin is invalid or has no WOE.")
+                self.logger.warning(f"Missing strategy 'first' for {new_woe_col_name} but first bin is invalid.")
         elif missing_bin_strategy == "last":
-            if woe_bins_list[-1] and "woe" in woe_bins_list[-1]: # Check if last bin exists and has WOE
-                fill_woe_value = woe_bins_list[-1]["woe"]
+            if woe_bins_list[-1]:
+                # Handle both dict and BadRates object
+                if hasattr(woe_bins_list[-1], 'woe'):
+                    fill_woe_value = woe_bins_list[-1].woe
+                elif isinstance(woe_bins_list[-1], dict) and "woe" in woe_bins_list[-1]:
+                    fill_woe_value = woe_bins_list[-1]["woe"]
+                else:
+                    self.logger.warning(f"Missing strategy 'last' for {new_woe_col_name} but last bin has no WOE.")
             else:
-                self.logger.warning(f"Missing strategy 'last' for {new_woe_col_name} but last bin is invalid or has no WOE.")
+                self.logger.warning(f"Missing strategy 'last' for {new_woe_col_name} but last bin is invalid.")
         else: # Default fallback logic (missing_bin_strategy is None or unexpected)
             self.logger.info(f"No specific missing_bin_strategy for {new_woe_col_name} (feature: {original_feature_name}) or strategy is '{missing_bin_strategy}'. "
                              "Using fallback: smaller WOE of first/last bin if available.")
             try:
-                woe_first = woe_bins_list[0].get("woe") if woe_bins_list else None
-                woe_last = woe_bins_list[-1].get("woe") if woe_bins_list else None
+                # Get first and last WOE values, handling both dict and BadRates object
+                if woe_bins_list:
+                    if hasattr(woe_bins_list[0], 'woe'):
+                        woe_first = woe_bins_list[0].woe
+                    else:
+                        woe_first = woe_bins_list[0].get("woe") if isinstance(woe_bins_list[0], dict) else None
+
+                    if hasattr(woe_bins_list[-1], 'woe'):
+                        woe_last = woe_bins_list[-1].woe
+                    else:
+                        woe_last = woe_bins_list[-1].get("woe") if isinstance(woe_bins_list[-1], dict) else None
+                else:
+                    woe_first = None
+                    woe_last = None
 
                 if woe_first is not None and woe_last is not None:
                     fill_woe_value = woe_first if woe_first < woe_last else woe_last
@@ -352,7 +369,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 delayed(refit)(
                     processed_data[list(d.keys())[0]], # Assumes d.keys()[0] is the feature name
                     target,
-                    [b.get("bin") for b in d.get(list(d.keys())[0], []) if isinstance(b,dict)], # Get list of bins
+                    [b.get("bin") for b in d.get(list(d.keys())[0], []) if isinstance(b, dict)], # Get list of bins
                     d.get("type_feature"),
                     d.get("missing_bin")
                 ) for d in self.woe_iv_dict if isinstance(d, dict) and d # Ensure d is a non-empty dict
@@ -365,8 +382,39 @@ class WOETransformer(BaseEstimator, TransformerMixin):
     def save_to_file(self, file_path: str) -> None:
         """Save WOE dictionary to file"""
         try:
+            # Make sure we have a serializable dictionary (no BadRates objects)
+            serializable_woe_dict = []
+            for feature_dict in self.woe_iv_dict:
+                if not isinstance(feature_dict, dict):
+                    self.logger.warning(f"Skipping non-dict item in woe_iv_dict: {feature_dict}")
+                    continue
+
+                # Create a deep copy to avoid modifying original
+                feature_dict_copy = {}
+                for key, value in feature_dict.items():
+                    if key in ["missing_bin", "type_feature"]:
+                        feature_dict_copy[key] = value
+                    else:
+                        # This is the feature name key with list of bin dicts
+                        feature_dict_copy[key] = []
+                        for bin_item in value:
+                            if hasattr(bin_item, '__dict__'):  # It's a BadRates object
+                                feature_dict_copy[key].append({
+                                    "bin": bin_item.bin,
+                                    "total": bin_item.total,
+                                    "bad": bin_item.bad,
+                                    "pct": bin_item.pct,
+                                    "bad_rate": bin_item.bad_rate,
+                                    "woe": bin_item.woe,
+                                    "iv": bin_item.iv
+                                })
+                            else:  # It's already a dict
+                                feature_dict_copy[key].append(bin_item)
+
+                serializable_woe_dict.append(feature_dict_copy)
+
             with open(file_path, "w", encoding='utf-8') as f:
-                json.dump(self.woe_iv_dict, f, indent=4, cls=NpEncoder)
+                json.dump(serializable_woe_dict, f, indent=4, cls=NpEncoder)
         except IOError as e:
             self.logger.error(f"IOError saving WOE dictionary to {file_path}: {e}")
             raise IOError(f"Failed to save WOE dictionary to {file_path}: {e}") from e
