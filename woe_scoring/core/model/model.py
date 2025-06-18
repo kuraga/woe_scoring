@@ -1,4 +1,4 @@
-from typing import List, Union, Callable, Any, Optional
+from typing import List, Union
 
 import numpy as np
 import pandas as pd
@@ -8,7 +8,6 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.model_selection import cross_val_score
 from sklearn.svm import l1_min_c
-# from functools import lru_cache
 
 
 class SMWrapper(BaseEstimator, RegressorMixin):
@@ -104,19 +103,11 @@ class Model:
         pvalues_: Statistical significance of each feature
     """
 
-
     def __init__(
-            self,
-            model_type: str,
-            l1_exp_scale: int,
-            l1_grid_size: int,
-            cv: Optional[int] = None,
-            class_weight: Optional[str] = None,
-            random_state: Optional[int] = None,
-            n_jobs: Optional[int] = None,
-            scoring: Optional[str] = None
+            self, model_type: str, l1_exp_scale: int, l1_grid_size: int, cv: int = None, class_weight: str = None,
+            random_state: int = None, n_jobs: int = None, scoring: str = None
     ) -> None:
-        self.model_type = model_type.lower()
+        self.model_type = model_type
         self.cv = cv
         self.class_weight = class_weight
         self.random_state = random_state
@@ -143,16 +134,15 @@ class Model:
         :return: A callable object that can be used to make predictions.
         :rtype: callable
         """
-    # @lru_cache(maxsize=None)
-    def get_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> Any:
+
         return self.model(data, target)
 
-    def _get_model(self, model_type: str) -> Callable:
-        model_types = {
-            'sklearn': self._get_sklearn_model,
-            'statsmodels': self._get_statsmodels_model
-        }
-        if model_type not in model_types:
+    def _get_model(self, model_type: str) -> callable:
+        if model_type == 'sklearn':
+            return self._get_sklearn_model
+        elif model_type == 'statsmodels':
+            return self._get_statsmodels_model
+        else:
             raise ValueError(f'Unknown model type: {model_type}. Should be either "sklearn" or "statsmodels"')
 
     def _get_sklearn_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> callable:
@@ -271,4 +261,3 @@ class Model:
 
         # Return p-values for features (excluding intercept)
         return p_values[1:]
-

@@ -1,12 +1,11 @@
 import os
-from functools import lru_cache, partial
 from itertools import combinations
-from typing import Dict, List, Union, Any
-from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Union
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 
@@ -75,7 +74,7 @@ def calc_features_gini_quality(
         n_jobs: int,
 ) -> Dict[str, float]:
     """
-    Calculates scorecard statistics and saves the complete scorecard to an Excel file.
+    Calculates the Gini quality of given features in data with respect to the target variable.
 
     Args:
         data (Union[pd.DataFrame, np.ndarray]): The dataset from which to calculate feature quality.
@@ -391,26 +390,42 @@ def generate_sql(
 
     return "".join(sql)
 
-        excel_file_path = os.path.join(output_path, "Scorecard.xlsx")
-        if not os.path.exists(output_path):
-            logger.info(f"Creating output directory for scorecard: {output_path}")
-            os.makedirs(output_path, exist_ok=True)
 
-        logger.info(f"Saving scorecard to Excel file: {excel_file_path}")
-        with pd.ExcelWriter(excel_file_path, engine="xlsxwriter") as writer:
-            excel_builder.build_excel_scorecard_sheet(
-                all_feature_scorecard_data=list_of_feature_scorecard_dfs,
-                excel_writer=writer
-            )
-        logger.info(f"Scorecard saved successfully to {excel_file_path}")
+def _calc_score_points(woe, coef, intercept, factor, offset: float, n_features: int) -> int:
+    """Calculate score points.
+    Args:
+        woe: WOE.
+        coef: Coefficient.
+        intercept: Intercept.
+        factor: Factor.
+        offset: Offset.
+        n_features: Number of features.
+    Returns:
+        Score points."""
 
-    except Exception as e:
-        logger.error(f"Error saving scorecard: {e}", exc_info=True)
-        # Re-raise the exception if it's critical for the calling process
-        # raise
+    return -(woe * coef + intercept / n_features) * factor + offset / n_features
 
 
-def calc_model_results(model_object: Model) -> pd.DataFrame:
+def _calc_stats_for_feature(
+        idx,
+        feature,
+        feature_names: List[str],
+        encoder,
+        model_results,
+        factor: float,
+        offset: float,
+) -> pd.DataFrame:
+    """Calculate stats for feature.
+    Args:
+        idx: Index.
+        feature: Feature.
+        feature_names: Feature names.
+        encoder: Encoder.
+        model_results: Model results.
+        factor: Factor.
+        offset: Offset.
+    Returns:
+        Stats for feature.
     """
     result_dict = {
         "feature": [],
@@ -523,40 +538,165 @@ def _calc_stats(
     )
 
 
+def _build_excel_sheet_with_charts(
+        feature_stats: list[pd.DataFrame],
+        writer: pd.ExcelWriter,
+        width: int = 640,
+        height: int = 480,
+        first_plot_position: str = 'A',
+        second_plot_position: str = "J",
+) -> None:
+    """Build excel sheet with charts.
+    Args:
+        feature_stats: Feature stats.
+        writer: Writer.
+        width: Width.
+        height: Height.
+        first_plot_position: First plot position.
+        second_plot_position: Second plot position.
     Returns:
-        A pandas DataFrame with columns 'Feature', 'coef', 'P>|z|'.
-    """
-    logger.info("Calculating model results (coefficients and p-values).")
+        None."""
 
-    # Ensure feature_names_, coef_, and pvalues_ are available and aligned
-    if not hasattr(model_object, 'feature_names_') or \
-       not hasattr(model_object, 'coef_') or \
-       not hasattr(model_object, 'pvalues_') or \
-       not hasattr(model_object, 'intercept_'):
-        logger.error("Model object is missing required attributes (feature_names_, coef_, pvalues_, intercept_).")
-        raise AttributeError("Model object is missing required attributes for calculating results.")
+    # Get workbook link
+    workbook = writer.book
+    # Create merge format
+    merge_format = workbook.add_format(
+        {
+            'bold': 1,
+            'border': 1,
+            'align': 'center',
+            'valign': 'vcenter'
+        }
+    )
+    const = [result for result in feature_stats if result.name == 'const']
+    iterator = [result for result in feature_stats if ((result is not None) and (result.name != 'const'))]
+    scorecard_iterator = [*const, *iterator]
+    indexes = np.cumsum([len(result) for result in scorecard_iterator])
+    full_features = pd.concat(tuple(scorecard_iterator), ignore_index=True)
+    full_features.to_excel(writer, sheet_name='Scorecard')
+    worksheet = writer.sheets['Scorecard']
+    area_start = 1
+    for result, index in zip(scorecard_iterator, indexes):
+        for column, column_width in zip([1, 2, 3], [20, 10, 10]):
+            worksheet.merge_range(area_start, column, index, column, result.iloc[0, column - 1], merge_format)
+            worksheet.set_column(column, column, column_width)
+        area_start = index + 1
 
-    if len(model_object.feature_names_) != len(model_object.coef_):
-        logger.error("Length mismatch between feature_names_ and coef_.")
-        raise ValueError("Model's feature_names_ and coef_ have inconsistent lengths.")
-    if len(model_object.feature_names_) != len(model_object.pvalues_):
-        logger.error("Length mismatch between feature_names_ and pvalues_.")
-        raise ValueError("Model's feature_names_ and pvalues_ have inconsistent lengths.")
+    for result in iterator:
+        # Get dimensions of result Excel sheet and column indexes
+        max_row = len(result)
+        event_cnt = result.columns.get_loc('event_cnt') + 1
+        non_event_cnt = result.columns.get_loc('non_event_cnt') + 1
+        score_ball = result.columns.get_loc('score_ball') + 1
+        woe = result.columns.get_loc('WOE') + 1
+        event_rate = result.columns.get_loc('event_rate') + 1
+        # Set sheet name, transfer data to sheet
+        sheet_name = result.name
+        result.to_excel(writer, sheet_name=sheet_name)
+        # Get worksheet link
+        worksheet = writer.sheets[sheet_name]
+        # Create stacked column chart
+        chart_events = workbook.add_chart({'type': 'column', 'subtype': 'stacked'})
+        # Add event and non-event counts to chart
+        chart_events.add_series(
+            {
+                'name': 'event_cnt ',
+                'values': [sheet_name, 1, event_cnt, max_row, event_cnt]
+            }
+        )
+        chart_events.add_series(
+            {
+                'name': 'non_event_cnt ',
+                'values': [sheet_name, 1, non_event_cnt, max_row, non_event_cnt]
+            }
+        )
+        # Create separate line chart for combination
+        woe_line = workbook.add_chart({'type': 'line'})
+        woe_line.add_series(
+            {
+                'name': 'WOE',
+                'values': [sheet_name, 1, woe, max_row, woe],
+                'smooth': False,
+                'y2_axis': True,
+            }
+        )
+        # Combine charts
+        chart_events.combine(woe_line)
+        # Create column chart for score_ball
+        chart_score_ball = workbook.add_chart({'type': 'column'})
+        chart_score_ball.add_series(
+            {
+                'name': 'score_ball ',
+                'values': [sheet_name, 1, score_ball, max_row, score_ball]
+            }
+        )
+        # Create separate line chart for combination
+        event_rate_line = workbook.add_chart({'type': 'line'})
+        event_rate_line.add_series(
+            {
+                'name': 'event_rate',
+                'values': [sheet_name, 1, event_rate, max_row, event_rate],
+                'smooth': False,
+                'y2_axis': True,
+            }
+        )
+        # Combine charts
+        chart_score_ball.combine(event_rate_line)
+        # Change size and legend of charts
+        chart_events.set_size({'width': width, 'height': height})
+        chart_events.set_legend({'position': 'bottom'})
+        chart_score_ball.set_size({'width': width, 'height': height})
+        chart_score_ball.set_legend({'position': 'bottom'})
+        # Merge first 3 columns
+        worksheet.merge_range(1, 1, max_row, 1, result.iloc[1, 0], merge_format)
+        worksheet.set_column(1, 1, 20)
+        worksheet.merge_range(1, 2, max_row, 2, result.iloc[1, 1], merge_format)
+        worksheet.set_column(2, 2, 10)
+        worksheet.merge_range(1, 3, max_row, 3, result.iloc[1, 2], merge_format)
+        worksheet.set_column(3, 3, 10)
+        # Insert charts
+        worksheet.insert_chart(f'{first_plot_position}{max_row + 3}', chart_events)
+        worksheet.insert_chart(f'{second_plot_position}{max_row + 3}', chart_score_ball)
 
-    feature_names_for_df = ['const'] + list(model_object.feature_names_)
-    coefficients_for_df = [model_object.intercept_] + list(model_object.coef_)
-    # Assuming pvalues_ from model_object corresponds to features; p-value for const might not be directly available
-    # or meaningful in the same way depending on the model type (e.g. sklearn LogisticRegression).
-    # For statsmodels, intercept p-value is available. Model class should abstract this.
-    # If model_object.intercept_pvalue_ exists, use it. Otherwise, default (e.g., 0.0 or NaN).
-    intercept_pvalue = getattr(model_object, 'intercept_pvalue_', 0.0) # Default if not available
-    logger.debug(f"Using intercept p-value: {intercept_pvalue}")
-    pvalues_for_df = [intercept_pvalue] + list(model_object.pvalues_)
 
-    results_df = pd.DataFrame({
-        'Feature': feature_names_for_df,
-        'coef': coefficients_for_df,
-        'P>|z|': pvalues_for_df
-    })
-    logger.info("Model results calculated successfully.")
-    return results_df
+def save_scorecard_fn(
+        feature_names: List[str],
+        encoder,
+        model_results,
+        base_scorecard_points: int,
+        odds: int,
+        points_to_double_odds: int,
+        path: str,
+) -> None:
+    """Save scorecard.
+    Args:
+        feature_names: Feature names.
+        encoder: Encoder.
+        model_results: Model results.
+        base_scorecard_points: Base scorecard points.
+        odds: Odds.
+        points_to_double_odds: Points to double odds.
+        path: Path.
+    Returns:
+        None."""
+
+    factor = points_to_double_odds / np.log(2)
+    offset = base_scorecard_points - factor * np.log(odds)
+
+    feature_stats = _calc_stats(
+        feature_names=feature_names,
+        encoder=encoder,
+        model_results=model_results,
+        factor=factor,
+        offset=offset
+    )
+
+    try:
+        writer = pd.ExcelWriter(os.path.join(path, "Scorecard.xlsx"), engine="xlsxwriter")
+        _build_excel_sheet_with_charts(
+            feature_stats=feature_stats,
+            writer=writer
+        )
+        writer.save()
+    except Exception as e:
+        print(f"Problem with saving: {e}")
