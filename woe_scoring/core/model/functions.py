@@ -38,16 +38,23 @@ def calculate_gini_score(
     Returns:
         A float representing the Gini score for the given feature.
     """
+    # Pre-reshape feature data for improved performance
+    X = data[feature].values.reshape(-1, 1)
 
+    # Create model with optimal parameters for fast convergence
+    estimator = LogisticRegression(
+        random_state=random_state,
+        class_weight=class_weight,
+        max_iter=1000,
+        n_jobs=1,  # Use 1 for the inner job to avoid nested parallelism
+        warm_start=True,
+        solver='liblinear'  # Faster for small datasets/single feature
+    )
+
+    # Calculate cross-validation scores
     scores = cross_val_score(
-        estimator=LogisticRegression(
-            random_state=random_state,
-            class_weight=class_weight,
-            max_iter=1000,
-            n_jobs=n_jobs,
-            warm_start=True,
-        ),
-        X=data[feature].values.reshape(-1, 1),
+        estimator=estimator,
+        X=X,
         y=target,
         cv=cv,
         scoring=scoring,
@@ -82,19 +89,25 @@ def calc_features_gini_quality(
     Returns:
         Dict: A dictionary containing the calculated Gini quality of each feature.
     """
-    return {
-        feature_name: calculate_gini_score(
+    # Ensure target is numpy array for consistency
+    target_array = target.values if hasattr(target, 'values') else np.array(target)
+
+    # Use parallel processing for faster computation
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(calculate_gini_score)(
             data=data,
-            target=target,
+            target=target_array,
             feature=feature_name,
             random_state=random_state,
             class_weight=class_weight,
             cv=cv,
             scoring=scoring,
-            n_jobs=n_jobs,
+            n_jobs=1,  # Use single process within each job to avoid nested parallelism
         )
         for feature_name in feature_names
-    }
+    )
+
+    return dict(zip(feature_names, results))
 
 
 def check_features_gini_threshold(
@@ -138,15 +151,35 @@ def check_correlation_threshold(
     :return: The uncorrelated feature names.
     :rtype: List[str]
     """
-    correlation_matrix = data[feature_names].corr()
+    # Handle empty feature list
+    if not feature_names:
+        return []
 
+    # Calculate correlation matrix only once
+    correlation_matrix = data[feature_names].corr().abs()
+
+    # More efficient algorithm to remove correlated features
+    # Start with all features
     uncorrelated_features = set(feature_names)
-    for feature_a, feature_b in combinations(feature_names, 2):
-        if abs(correlation_matrix[feature_a][feature_b]) >= corr_threshold:
-            if features_gini_scores[feature_a] > features_gini_scores[feature_b]:
+
+    # Pre-sort features by Gini score (higher score first)
+    sorted_features = sorted(feature_names, key=lambda x: features_gini_scores.get(x, 0), reverse=True)
+
+    # For each feature (in order of decreasing importance)
+    for i, feature_a in enumerate(sorted_features):
+        # If feature already removed, skip
+        if feature_a not in uncorrelated_features:
+            continue
+
+        # Compare with remaining features
+        for feature_b in sorted_features[i+1:]:
+            if feature_b not in uncorrelated_features:
+                continue
+
+            # If correlation exceeds threshold, remove the less important feature
+            if abs(correlation_matrix.loc[feature_a, feature_b]) >= corr_threshold:
                 uncorrelated_features.discard(feature_b)
-            else:
-                uncorrelated_features.discard(feature_a)
+
     return list(uncorrelated_features)
 
 
@@ -164,28 +197,45 @@ def check_min_pct_group(
         min_pct_group: Minimum percentage of values below a threshold.
 
     Returns:
-        List of features with a minimum percentage of values below a threshold.
+        List of features with a minimum percentage of values above or equal to the threshold.
     """
-    features_to_drop = [
-        feature_name for feature_name in feature_names
-        if data[feature_name].value_counts(normalize=True).min() < min_pct_group
-    ]
-    return list(set(feature_names) - set(features_to_drop))
+    # More efficient implementation with early stopping
+    valid_features = []
+
+    for feature_name in feature_names:
+        # Calculate value counts and find minimum percentage
+        value_counts = data[feature_name].value_counts(normalize=True)
+
+        # Skip expensive min() calculation if possible
+        if len(value_counts) == 0:
+            continue
+        elif len(value_counts) == 1:
+            # Single value feature - keep it as it has 100% in one group
+            valid_features.append(feature_name)
+        else:
+            # Check if smallest percentage is above threshold
+            if value_counts.min() >= min_pct_group:
+                valid_features.append(feature_name)
+
+    return valid_features
 
 
-def find_bad_features(model: Model) -> List[int]:
+def find_bad_features(model: Model) -> List[str]:
     """Find features with high p-values and positive sign.
     Args:
         model: Model.
     Returns:
-        List of features with high p-values and positive sign.
+        List of features with high p-values or positive coefficients.
     """
+    bad_features = []
 
-    return [
-        feature
-        for i, feature in enumerate(model.feature_names_)
-        if model.pvalues_[i] > 0.05 or model.coef_[i] > 0
-    ]
+    for i, feature in enumerate(model.feature_names_):
+        # Check if p-value is too high (not statistically significant)
+        # or if coefficient is positive (for binary classification with 0/1 target)
+        if model.pvalues_[i] > 0.05 or model.coef_[i] > 0:
+            bad_features.append(feature)
+
+    return bad_features
 
 
 def calc_iv_dict(data: pd.DataFrame, target: np.ndarray, feature: str) -> Dict:
@@ -239,72 +289,105 @@ def save_reports(
 def generate_sql(
         encoder, feature_names: List[str], coef: List[float], intercept: float,
 ) -> str:
+    """
+    Generate SQL query for model deployment based on fitted model.
+
+    Args:
+        encoder: WOE encoder used to transform features
+        feature_names: List of feature names in the model
+        coef: List of coefficient values
+        intercept: Intercept value
+
+    Returns:
+        str: SQL query for model scoring
+    """
+    # Strip WOE_ prefix from original feature names
+    base_features = [var.replace("WOE_", "") for var in feature_names]
+
+    # Initialize SQL query parts
     sql = [
-        "with a as " + "(SELECT ",
-        ",".join([var.replace("WOE_", "") for var in feature_names]),
+        "with a as (SELECT ",
+        ",".join(base_features),
         "",
     ]
-    for var in feature_names:
-        for i, _ in enumerate(encoder.woe_iv_dict):
-            if list(encoder.woe_iv_dict[i])[0] == var.replace("WOE_", ""):
-                sql.append(", CASE")
-                if encoder.woe_iv_dict[i]["type_feature"] == "cat":
-                    sql.extend(
-                        f" WHEN {var.replace('WOE_', '')} in {bin['bin']} THEN {bin['woe']}".replace(
-                            "[", "("
-                        )
-                        .replace("]", ")")
-                        .replace(", -1", "")
-                        .replace(", Missing", "")
-                        for bin in encoder.woe_iv_dict[i][
-                            var.replace("WOE_", "")
-                        ]
-                    )
-                    if encoder.woe_iv_dict[i]["missing_bin"] == "first":
-                        sql.append(
-                            f" WHEN {var.replace('WOE_', '')} IS NULL THEN {encoder.woe_iv_dict[i][var.replace('WOE_', '')][0]['woe']}"
-                        )
-                        sql.append(f" ELSE {encoder.woe_iv_dict[i][var.replace('WOE_', '')][0]['woe']}")
-                    elif encoder.woe_iv_dict[i]["missing_bin"] == "last":
-                        sql.append(
-                            f" WHEN {var.replace('WOE_', '')} IS NULL THEN {encoder.woe_iv_dict[i][var.replace('WOE_', '')][len(encoder.woe_iv_dict[i][var.replace('WOE_', '')]) - 1]['woe']}"
-                        )
-                        sql.append(
-                            f" ELSE {encoder.woe_iv_dict[i][var.replace('WOE_', '')][len(encoder.woe_iv_dict[i][var.replace('WOE_', '')]) - 1]['woe']}"
-                        )
-                else:
-                    if encoder.woe_iv_dict[i]["missing_bin"] == "first":
-                        sql.append(
-                            f" WHEN {var.replace('WOE_', '')} IS NULL THEN {encoder.woe_iv_dict[i][var.replace('WOE_', '')][0]['woe']}"
-                        )
-                    elif encoder.woe_iv_dict[i]["missing_bin"] == "last":
-                        sql.append(
-                            f" WHEN {var.replace('WOE_', '')} IS NULL THEN {encoder.woe_iv_dict[i][var.replace('WOE_', '')][len(encoder.woe_iv_dict[i][var.replace('WOE_', '')]) - 1]['woe']}"
-                        )
-                    for n, bin in enumerate(encoder.woe_iv_dict[i][var.replace("WOE_", "")]):
-                        if n == 0:
-                            sql.append(f" WHEN {var.replace('WOE_', '')} < {bin['bin'][1]} THEN {bin['woe']}")
-                        elif n == len(encoder.woe_iv_dict[i][var.replace("WOE_", "")]) - 1:
-                            sql.append(f" WHEN {var.replace('WOE_', '')} >= {bin['bin'][0]} THEN {bin['woe']}")
-                        else:
-                            sql.append(
-                                f" WHEN {var.replace('WOE_', '')} >= {bin['bin'][0]} AND {var.replace('WOE_', '')} < {bin['bin'][1]} THEN {bin['woe']}"
-                            )
-                sql.append(f" END AS {var}")
-    sql.extend(
-        (
-            " FROM )",
-            ", b as (",
-            "SELECT a.*",
-            f", REPLACE(1 / (1 + EXP(-({intercept}",
-        )
-    )
 
-    sql.extend(
-        f" + ({coef[idx]} * a.{feature_names[idx]})"
-        for idx in range(len(feature_names))
-    )
-    sql.extend(("))), ',', '.') as PD", " FROM a) ", "SELECT * FROM b"))
+    # Process each feature's transformation
+    for var in feature_names:
+        base_var = var.replace("WOE_", "")
+
+        # Find corresponding encoder dictionary entry
+        woe_dict_entry = None
+        for entry in encoder.woe_iv_dict:
+            if list(entry.keys())[0] == base_var:
+                woe_dict_entry = entry
+                break
+
+        if not woe_dict_entry:
+            continue  # Skip if not found
+
+        # Start CASE statement
+        sql.append(", CASE")
+
+        # Handle categorical vs numerical features differently
+        if woe_dict_entry["type_feature"] == "cat":
+            # Categorical feature binning
+            for bin_info in woe_dict_entry[base_var]:
+                bin_str = str(bin_info["bin"]).replace("[", "(").replace("]", ")") \
+                                             .replace(", -1", "").replace(", Missing", "")
+                sql.append(f" WHEN {base_var} in {bin_str} THEN {bin_info['woe']}")
+
+            # Handle missing values
+            if woe_dict_entry["missing_bin"] == "first":
+                first_bin_woe = woe_dict_entry[base_var][0]['woe']
+                sql.append(f" WHEN {base_var} IS NULL THEN {first_bin_woe}")
+                sql.append(f" ELSE {first_bin_woe}")
+            elif woe_dict_entry["missing_bin"] == "last":
+                last_bin_woe = woe_dict_entry[base_var][-1]['woe']
+                sql.append(f" WHEN {base_var} IS NULL THEN {last_bin_woe}")
+                sql.append(f" ELSE {last_bin_woe}")
+        else:
+            # Numerical feature binning
+
+            # Handle NULL values first
+            if woe_dict_entry["missing_bin"] == "first":
+                sql.append(f" WHEN {base_var} IS NULL THEN {woe_dict_entry[base_var][0]['woe']}")
+            elif woe_dict_entry["missing_bin"] == "last":
+                sql.append(f" WHEN {base_var} IS NULL THEN {woe_dict_entry[base_var][-1]['woe']}")
+
+            # Handle numeric bins
+            for n, bin_info in enumerate(woe_dict_entry[base_var]):
+                if n == 0:
+                    sql.append(f" WHEN {base_var} < {bin_info['bin'][1]} THEN {bin_info['woe']}")
+                elif n == len(woe_dict_entry[base_var]) - 1:
+                    sql.append(f" WHEN {base_var} >= {bin_info['bin'][0]} THEN {bin_info['woe']}")
+                else:
+                    sql.append(
+                        f" WHEN {base_var} >= {bin_info['bin'][0]} AND {base_var} < {bin_info['bin'][1]} "
+                        f"THEN {bin_info['woe']}"
+                    )
+
+        # Close CASE statement
+        sql.append(f" END AS {var}")
+
+    # Add model formula
+    sql.extend([
+        " FROM )",
+        ", b as (",
+        "SELECT a.*",
+        f", REPLACE(1 / (1 + EXP(-({intercept}"
+    ])
+
+    # Add feature coefficients
+    for idx, feature in enumerate(feature_names):
+        sql.append(f" + ({coef[idx]} * a.{feature})")
+
+    # Finish query
+    sql.extend([
+        "))), ',', '.') as PD",
+        " FROM a) ",
+        "SELECT * FROM b"
+    ])
+
     return "".join(sql)
 
 
@@ -402,16 +485,20 @@ def _calc_stats_for_feature(
 
 
 def _update_result_dict(result_dict, feature, model_results, idx) -> None:
-    """Update result dict.
+    """Update result dict with feature information.
     Args:
-        result_dict: Result dict.
-        feature: Feature.
-        model_results: Model results.
-        idx: Index.
+        result_dict: Dictionary to update with feature information.
+        feature: Feature name.
+        model_results: DataFrame with model coefficient results.
+        idx: Index in model_results.
     Returns:
-        None."""
+        None: Updates result_dict in-place.
+    """
+    # Extract base feature name by removing WOE_ prefix
+    feature_name = feature.replace("WOE_", "")
 
-    result_dict["feature"].append(feature.replace("WOE_", ""))
+    # Add feature information to the result dictionary
+    result_dict["feature"].append(feature_name)
     result_dict["coef"].append(model_results.loc[idx, "coef"])
     result_dict["pvalue"].append(model_results.loc[idx, "P>|z|"])
 
@@ -423,21 +510,31 @@ def _calc_stats(
         factor: float,
         offset: float,
 ) -> List[pd.DataFrame]:
-    """Calculate stats.
+    """Calculate feature statistics for reporting.
     Args:
-        feature_names: Feature names.
-        encoder: Encoder.
-        model_results: Model results.
-        factor: Factor.
-        offset: Offset.
+        feature_names: List of feature names in the model.
+        encoder: WOE encoder used for transformations.
+        model_results: Model coefficient results.
+        factor: Scaling factor for points calculation.
+        offset: Offset value for points calculation.
     Returns:
-        Stats."""
+        List of DataFrames with feature statistics.
+    """
+    # Extract features to process from model results
+    features_to_process = model_results.iloc[:, 0]
 
-    return Parallel(n_jobs=-1, backend="multiprocessing")(
+    # Use parallel processing with explicit parameters for efficiency
+    return Parallel(n_jobs=-1, backend="threading", prefer="threads")(
         delayed(_calc_stats_for_feature)(
-            idx, feature, feature_names, encoder, model_results, factor, offset
+            idx=idx,
+            feature=feature,
+            feature_names=feature_names,
+            encoder=encoder,
+            model_results=model_results,
+            factor=factor,
+            offset=offset
         ).rename(feature.replace("WOE_", ""))
-        for idx, feature in enumerate(model_results.iloc[:, 0])
+        for idx, feature in enumerate(features_to_process)
     )
 
 

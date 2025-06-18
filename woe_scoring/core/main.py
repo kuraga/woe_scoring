@@ -151,34 +151,54 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         """
 
         data = data.copy()
-        for i, woe_iv in enumerate(self.woe_iv_dict):
+        features_to_delete = []
+
+        # Pre-create all new feature columns
+        for woe_iv in self.woe_iv_dict:
+            feature = list(woe_iv)[0]
+            new_feature = self.prefix + feature
+            data[new_feature] = np.nan
+            if not self.safe_original_data:
+                features_to_delete.append(feature)
+
+        # Apply transformations
+        for woe_iv in self.woe_iv_dict:
             feature = list(woe_iv)[0]
             woe_iv_feature = woe_iv[feature]
             new_feature = self.prefix + feature
-            for bin_values in woe_iv_feature:
-                if feature in self.cat_features:
-                    data.loc[
-                        np.isin(data[feature], bin_values["bin"]), new_feature
-                    ] = bin_values["woe"]
-                else:
-                    data.loc[
-                        np.logical_and(
-                            data[feature] >= np.min(bin_values["bin"]),
-                            data[feature] < np.max(bin_values["bin"]),
-                        ),
-                        new_feature,
-                    ] = bin_values["woe"]
-            missing_bin = woe_iv["missing_bin"]
-            if missing_bin == "first":
-                data[new_feature].fillna(woe_iv_feature[0]["woe"], inplace=True)
-            elif missing_bin == "last":
-                data[new_feature].fillna(woe_iv_feature[-1]["woe"], inplace=True)
-            elif woe_iv_feature[0]["woe"] < woe_iv_feature[-1]["woe"]:
-                data[new_feature].fillna(woe_iv_feature[0]["woe"], inplace=True)
+
+            # Apply bins based on feature type
+            if feature in self.cat_features:
+                # Categorical features - vectorized approach using map with default to NaN
+                bin_map = {}
+                for bin_values in woe_iv_feature:
+                    for bin_val in bin_values["bin"]:
+                        bin_map[bin_val] = bin_values["woe"]
+
+                # Convert to category first for efficiency with large datasets
+                data.loc[:, new_feature] = data[feature].map(bin_map)
             else:
-                data[new_feature].fillna(woe_iv_feature[-1]["woe"], inplace=True)
-            if not self.safe_original_data:
-                del data[feature]
+                # Numerical features
+                for bin_values in woe_iv_feature:
+                    mask = np.logical_and(
+                        data[feature] >= np.min(bin_values["bin"]),
+                        data[feature] < np.max(bin_values["bin"])
+                    )
+                    data.loc[mask, new_feature] = bin_values["woe"]
+
+            # Handle missing values efficiently
+            missing_bin = woe_iv["missing_bin"]
+            missing_value = (
+                woe_iv_feature[0]["woe"] if missing_bin == "first" or
+                (missing_bin is None and woe_iv_feature[0]["woe"] < woe_iv_feature[-1]["woe"])
+                else woe_iv_feature[-1]["woe"]
+            )
+            data.loc[data[new_feature].isna(), new_feature] = missing_value
+
+        # Remove original features if needed
+        if features_to_delete:
+            data = data.drop(columns=features_to_delete)
+
         return data
 
     def save_to_file(self, file_path: str) -> None:
@@ -220,39 +240,52 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         """
 
         data, self.feature_names = prepare_data(data=data, special_cols=self.special_cols)
-        self.woe_iv_dict = Parallel(n_jobs=self.n_jobs, backend='multiprocessing')(
+
+        # Ensure target is numpy array for consistency
+        target_values = target.values if hasattr(target, 'values') else np.array(target)
+
+        # Process in parallel with optimized parameters
+        self.woe_iv_dict = Parallel(n_jobs=self.n_jobs, backend='threading')(
             delayed(refit)(
-                data[list(self.woe_iv_dict[i].keys())[0]],
-                target.values,
-                [_bin["bin"] for _bin in self.woe_iv_dict[i][list(self.woe_iv_dict[i].keys())[0]]],
-                self.woe_iv_dict[i]["type_feature"],
-                self.woe_iv_dict[i]["missing_bin"]
-            ) for i in range(len(self.woe_iv_dict))
+                data[list(woe_iv.keys())[0]],
+                target_values,
+                [_bin["bin"] for _bin in woe_iv[list(woe_iv.keys())[0]]],
+                woe_iv["type_feature"],
+                woe_iv["missing_bin"]
+            ) for woe_iv in self.woe_iv_dict
         )
 
 
 class CreateModel(BaseEstimator, TransformerMixin):
     """
-    Class to create a model.
+    Class to create a predictive model with automatic feature selection.
+
+    This class automates the feature selection process and model training,
+    supporting multiple selection techniques and model types.
 
     Args:
-        selection_method (str): The method used for feature selection. Can be 'rfe', 'sfs', or 'iv'.
-        model_type (str): The type of model used for feature selection. Can be 'sklearn' or 'statsmodel'.
-        max_vars (int, float, None): The maximum number of features to select. If None, no limit is applied.
-        special_cols (list, optional): List of special columns to be included in feature selection.
-        unused_cols (list, optional): List of columns to be excluded from feature selection.
-        n_jobs (int): The number of CPU cores to use for parallelization.
-        gini_threshold (float): The threshold value for gini impurity measure in decision tree-based models.
-        iv_threshold (float): The threshold value for information value measure in logistic regression-based models.
-        corr_threshold (float): The threshold value for correlation coefficient in feature selection.
-        min_pct_group (float): The minimum percentage of each class in binary classification problems.
-        random_state (int, optional): The random state for reproducibility.
-        class_weight (str): The weight balancing strategy for imbalanced datasets.
-        direction (str): The direction of feature selection. Can be 'forward' or 'backward'.
-        cv (int): The number of cross-validation folds.
-        l1_exp_scale (int): The exponent scaling factor for L1 regularization in logistic regression-based models.
-        l1_grid_size (int): The number of grid points to search for L1 regularization strength.
-        scoring (str): The scoring metric to use for evaluating model performance.
+        selection_method (str): Feature selection method: 'rfe', 'sfs', or 'iv'.
+            - 'rfe': Recursive Feature Elimination
+            - 'sfs': Sequential Feature Selection
+            - 'iv': Information Value based selection
+        model_type (str): Model type: 'sklearn' or 'statsmodel'.
+        max_vars (int, float, None): Maximum number of features to select.
+            If float < 1, interpreted as a percentage of total features.
+            If None, no limit is applied.
+        special_cols (list, optional): Special columns to include in selection.
+        unused_cols (list, optional): Columns to exclude from selection.
+        n_jobs (int): Number of CPU cores for parallelization.
+        gini_threshold (float): Minimum Gini score to retain a feature.
+        iv_threshold (float): Minimum information value threshold for 'iv' method.
+        corr_threshold (float): Maximum correlation allowed between features.
+        min_pct_group (float): Minimum percentage for each target class.
+        random_state (int, optional): Random seed for reproducible results.
+        class_weight (str): Class weight strategy ('balanced' or None).
+        direction (str): Feature selection direction: 'forward' or 'backward'.
+        cv (int): Number of cross-validation folds.
+        l1_exp_scale (int): Exponent scale for L1 regularization grid.
+        l1_grid_size (int): Grid size for L1 regularization search.
+        scoring (str): Metric for model evaluation (e.g., 'roc_auc').
     """
 
     def __init__(
@@ -314,19 +347,23 @@ class CreateModel(BaseEstimator, TransformerMixin):
         Returns:
             The fitted model.
         """
-
+        # Prepare data and filter features
         data, self.feature_names_ = prepare_data(data=data, special_cols=self.special_cols)
 
+        # Remove unused columns if specified
         if self.unused_cols:
-            self.feature_names_ = [feature for feature in self.feature_names_ if feature not in self.unused_cols]
+            self.feature_names_ = [f for f in self.feature_names_ if f not in self.unused_cols]
 
+        # Calculate max_vars if it's a ratio
         if self.max_vars is not None and self.max_vars < 1:
             self.max_vars = int(len(self.feature_names_) * self.max_vars)
 
+        # Filter features based on minimum group percentage
         self.feature_names_ = check_min_pct_group(
             data=data, feature_names=self.feature_names_, min_pct_group=self.min_pct_group
         )
 
+        # Calculate Gini scores for all features in parallel
         self.features_gini_scores = calc_features_gini_quality(
             data=data,
             target=target,
@@ -338,12 +375,14 @@ class CreateModel(BaseEstimator, TransformerMixin):
             scoring=self.scoring
         )
 
+        # Filter features by Gini threshold
         self.feature_names_ = check_features_gini_threshold(
             feature_names=self.feature_names_,
             features_gini_scores=self.features_gini_scores,
             gini_threshold=self.gini_threshold
         )
 
+        # Create feature selector
         feature_selector = FeatureSelector(
             selection_type=self.selection_method,
             max_vars=self.max_vars,
@@ -357,6 +396,8 @@ class CreateModel(BaseEstimator, TransformerMixin):
             scoring=self.scoring,
             iv_threshold=self.iv_threshold
         )
+
+        # Select initial features and check for correlations
         selected_features = feature_selector.select(data, target, self.feature_names_)
         selected_features = check_correlation_threshold(
             data=data,
@@ -365,6 +406,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
             corr_threshold=self.corr_threshold,
         )
 
+        # Initialize model
         selected_model = Model(
             model_type=self.model_type,
             n_jobs=self.n_jobs,
@@ -375,14 +417,23 @@ class CreateModel(BaseEstimator, TransformerMixin):
             random_state=self.random_state,
             scoring=self.scoring
         )
-        self.model = selected_model.get_model(data[selected_features], target)
 
-        while True:
+        # Iteratively improve model by removing bad features
+        self.model = selected_model.get_model(data[selected_features], target)
+        max_iterations = 10  # Prevent infinite loops
+        iteration = 0
+
+        while iteration < max_iterations:
+            iteration += 1
             bad_features = find_bad_features(selected_model)
-            if len(bad_features) == 0:
+            if not bad_features:
                 break
-            self.feature_names_ = [feature for feature in self.feature_names_ if
-                                   feature not in bad_features]
+
+            # Remove bad features and reselect
+            self.feature_names_ = [f for f in self.feature_names_ if f not in bad_features]
+            if not self.feature_names_:  # Prevent empty feature list
+                break
+
             selected_features = feature_selector.select(data, target, self.feature_names_)
             selected_features = check_correlation_threshold(
                 data=data,
@@ -390,8 +441,10 @@ class CreateModel(BaseEstimator, TransformerMixin):
                 features_gini_scores=self.features_gini_scores,
                 corr_threshold=self.corr_threshold
             )
+
             self.model = selected_model.get_model(data[selected_features], target)
 
+        # Copy final model attributes
         self.coef_ = selected_model.coef_
         self.intercept_ = selected_model.intercept_
         self.feature_names_ = selected_model.feature_names_

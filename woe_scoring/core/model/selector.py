@@ -1,5 +1,5 @@
 from operator import itemgetter
-from typing import List, Union
+from typing import Dict, List, Union
 
 import numpy as np
 import pandas as pd
@@ -12,20 +12,27 @@ from .functions import calc_iv_dict
 
 class FeatureSelector:
     """
-    Initialize a feature selector object with the specified parameters.
+    Feature selection for predictive models using various algorithms.
+
+    This class provides a unified interface for different feature selection strategies
+    including recursive feature elimination (RFE), sequential feature selection (SFS),
+    and information value (IV) based selection.
 
     Args:
-        selection_type (str): The type of feature selection algorithm to use.
+        selection_type (str): Feature selection algorithm to use: 'rfe', 'sfs', or 'iv'.
+            - 'rfe': Recursive Feature Elimination with cross-validation
+            - 'sfs': Sequential Feature Selection (forward or backward)
+            - 'iv': Information Value based selection
         random_state (int): Random seed for reproducibility.
-        class_weight (str): Class weights for imbalanced classification problems.
-        cv (int): Number of cross-validation folds to use.
-        n_jobs (int): Number of CPU cores to use for parallelization.
+        class_weight (str): Class weights strategy for imbalanced data ('balanced' or None).
+        cv (int): Number of cross-validation folds.
+        n_jobs (int): Number of CPU cores for parallel processing.
         max_vars (int): Maximum number of features to select.
-        direction (str): The direction to select features in (forward or backward).
-        scoring (str): The scoring metric to use for feature selection.
-        l1_exp_scale (int): The exponent used for generating L1 regularization values.
-        l1_grid_size (int): The size of the L1 regularization grid to search over.
-        iv_threshold (float): The minimum information value threshold for a feature.
+        direction (str): Direction for sequential selection ('forward' or 'backward').
+        scoring (str): Metric for evaluating feature importance (e.g., 'roc_auc').
+        l1_exp_scale (int): Exponent scale for L1 regularization grid.
+        l1_grid_size (int): Number of points in L1 regularization grid.
+        iv_threshold (float): Minimum information value required to keep a feature.
     """
 
     def __init__(
@@ -49,101 +56,200 @@ class FeatureSelector:
         self.selector = self._get_selector(self.selection_type)
 
     def select(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
+        """
+        Select features using the configured selection method.
+
+        Args:
+            data: Input DataFrame containing all features
+            target: Target variable (binary classification)
+            feature_names: List of feature names to consider for selection
+
+        Returns:
+            List of selected feature names
+        """
+        # Handle empty feature list
+        if not feature_names:
+            return []
+
         return self.selector(data=data, target=target, feature_names=feature_names)
 
     def _get_selector(self, selection_type) -> callable:
-        """Returns an instance of the feature selector based on the selection_type."""
-        if selection_type == 'rfe':
-            return self._select_by_rfe
-        elif selection_type == 'sfs':
-            return self._select_by_sfs
-        elif selection_type == 'iv':
-            return self._select_by_iv
-        else:
-            raise ValueError(f'Unknown feature selection type: {selection_type}. Should be "rfe", "sfs" or "iv"')
-
-    def _select_by_iv(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[
-        str]:
         """
-        Selects top features based on Information Value (IV) score.
+        Returns the appropriate feature selection function based on selection_type.
 
         Args:
-            data (pd.DataFrame): The input dataset.
-            target (Union[pd.Series, np.ndarray]): The target variable.
-            feature_names (List[str]): A list of feature names to calculate IV for.
+            selection_type: Type of feature selection ('rfe', 'sfs', or 'iv')
 
         Returns:
-            List[str]: A list of top feature names, sorted by IV score in descending order.
+            Function that implements the selected feature selection method
+
+        Raises:
+            ValueError: If an invalid selection_type is provided
         """
+        selection_methods = {
+            'rfe': self._select_by_rfe,
+            'sfs': self._select_by_sfs,
+            'iv': self._select_by_iv
+        }
 
-        iv_dict_list = [calc_iv_dict(data, target, feature_name) for feature_name in feature_names]
-        iv_dict = {}
-        for d in iv_dict_list:
-            iv_dict |= d
+        if selection_type in selection_methods:
+            return selection_methods[selection_type]
 
-        sorted_iv_dict = dict(sorted(iv_dict.items(), key=itemgetter(1), reverse=True))
-        top_features = [feature for feature in sorted_iv_dict if sorted_iv_dict[feature] >= self.iv_threshold]
-        return top_features[:self.max_vars]
+        raise ValueError(
+            f'Unknown feature selection type: {selection_type}. '
+            f'Should be one of: {", ".join(selection_methods.keys())}'
+        )
 
-    def _select_by_sfs(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> \
-            List[str]:
+    def _select_by_iv(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
         """
-        Selects the best features using Sequential Feature Selection (SFS) algorithm.
+        Selects features based on Information Value (IV) score.
+
+        Features are ranked by their IV scores, filtered by the threshold,
+        and limited to the maximum number of variables specified.
 
         Args:
-            data (pandas.DataFrame): The input data.
-            target (Union[pandas.Series, numpy.ndarray]): The target variable.
-            feature_names (List[str]): A list of feature names.
+            data: Input dataset containing features
+            target: Target variable for binary classification
+            feature_names: List of feature names to evaluate
 
         Returns:
-            List[str]: A list of selected feature names.
+            List of selected feature names, sorted by IV score in descending order
         """
+        # Ensure target is numpy array
+        target_array = target.values if hasattr(target, 'values') else np.array(target)
+
+        # Calculate IV for each feature efficiently
+        iv_values: Dict[str, float] = {}
+        for feature_name in feature_names:
+            feature_iv = calc_iv_dict(data, target_array, feature_name)
+            iv_values.update(feature_iv)
+
+        # Sort features by IV score (descending)
+        sorted_features = sorted(iv_values.items(), key=itemgetter(1), reverse=True)
+
+        # Filter by threshold and limit to max_vars
+        selected_features = [
+            feature for feature, iv_score in sorted_features
+            if iv_score >= self.iv_threshold
+        ]
+
+        return selected_features[:self.max_vars] if self.max_vars else selected_features
+
+    def _select_by_sfs(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
+        """
+        Selects features using Sequential Feature Selection (SFS).
+
+        SFS adds (forward) or removes (backward) features sequentially to find
+        the optimal feature subset that maximizes model performance.
+
+        Args:
+            data: Input dataset containing features
+            target: Target variable for binary classification
+            feature_names: List of feature names to consider
+
+        Returns:
+            List of selected feature names
+        """
+        # Handle empty feature list
+        if not feature_names:
+            return []
+
+        # Subset the data to only use specified features
+        X = data[feature_names]
+
+        # Ensure target is in the right format
+        y = target.values if hasattr(target, 'values') else np.array(target)
+
+        # Calculate optimal regularization strength
+        C = l1_min_c(X, y, loss="log", fit_intercept=True)
+
+        # Create optimized logistic regression estimator
+        estimator = LogisticRegression(
+            class_weight=self.class_weight,
+            random_state=self.random_state,
+            n_jobs=1,  # Use 1 here to avoid nested parallelism
+            tol=1e-5,
+            max_iter=5000,
+            penalty="l2",
+            warm_start=True,
+            solver='liblinear',  # More efficient for this task
+            C=C
+        )
+
+        # Set up Sequential Feature Selector
+        n_features = min(self.max_vars, len(feature_names)) if self.max_vars else 'auto'
         selector = SequentialFeatureSelector(
-            estimator=LogisticRegression(
-                class_weight=self.class_weight,
-                random_state=self.random_state,
-                n_jobs=self.n_jobs,
-                tol=1e-5,
-                max_iter=5000,
-                penalty="l2",
-                warm_start=True,
-                C=l1_min_c(data[feature_names], target, loss="log", fit_intercept=True)
-            ),
-            n_features_to_select=self.max_vars,
+            estimator=estimator,
+            n_features_to_select=n_features,
             direction=self.direction,
             cv=self.cv,
             n_jobs=self.n_jobs,
             scoring=self.scoring
         )
-        selector.fit(data[feature_names], target)
-        return np.array(feature_names)[selector.get_support()].tolist()
 
-    def _select_by_rfe(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> \
-            List[str]:
-        """
-        Selects the best features using Recursive Feature Elimination with Cross-Validation (RFE-CV) algorithm.
+        # Fit selector
+        selector.fit(X, y)
 
-        :param data: The input data (pandas DataFrame).
-        :param target: The target variable (pandas Series or numpy array).
-        :param feature_names: The list of feature names to select from (list of strings).
-        :return: The list of selected feature names (list of strings).
+        # Extract selected feature names
+        return list(np.array(feature_names)[selector.get_support()])
+
+    def _select_by_rfe(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
         """
+        Selects features using Recursive Feature Elimination with Cross-Validation (RFECV).
+
+        RFECV recursively removes features, selecting the optimal feature subset
+        that maximizes cross-validated model performance.
+
+        Args:
+            data: Input dataset containing features
+            target: Target variable for binary classification
+            feature_names: List of feature names to consider
+
+        Returns:
+            List of selected feature names
+        """
+        # Handle empty feature list
+        if not feature_names:
+            return []
+
+        # Subset the data to only use specified features
+        X = data[feature_names]
+
+        # Ensure target is in the right format
+        y = target.values if hasattr(target, 'values') else np.array(target)
+
+        # Calculate optimal regularization strength
+        C = l1_min_c(X, y, loss="log", fit_intercept=True)
+
+        # Create optimized logistic regression estimator
+        estimator = LogisticRegression(
+            class_weight=self.class_weight,
+            random_state=self.random_state,
+            n_jobs=1,  # Use 1 here to avoid nested parallelism
+            tol=1e-5,
+            max_iter=5000,
+            penalty="l2",
+            warm_start=True,
+            solver='liblinear',  # More efficient for feature selection
+            C=C
+        )
+
+        # Set minimum features to select (default to 1 if not specified)
+        min_features = self.max_vars if self.max_vars else 1
+
+        # Set up RFECV
         selector = RFECV(
-            estimator=LogisticRegression(
-                class_weight=self.class_weight,
-                random_state=self.random_state,
-                n_jobs=self.n_jobs,
-                tol=1e-5,
-                max_iter=5000,
-                penalty="l2",
-                warm_start=True,
-                C=l1_min_c(data[feature_names], target, loss="log", fit_intercept=True)
-            ),
+            estimator=estimator,
             step=1,
             cv=self.cv,
             scoring=self.scoring,
-            min_features_to_select=self.max_vars,
-            n_jobs=self.n_jobs
+            min_features_to_select=min_features,
+            n_jobs=self.n_jobs,
+            importance_getter='coef_'  # Explicitly use coefficients for feature importance
         )
-        selector.fit(data[feature_names], target)
-        return np.array(feature_names)[selector.get_support()].tolist()
+
+        # Fit selector
+        selector.fit(X, y)
+
+        # Extract selected feature names
+        return list(np.array(feature_names)[selector.get_support()])
