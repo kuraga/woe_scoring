@@ -7,9 +7,10 @@ from sklearn.feature_selection import RFECV, SequentialFeatureSelector
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import l1_min_c
 
-from .functions import calc_iv_dict
+from .feature_analyzer import calculate_iv_for_feature
 
 
+@dataclass
 class FeatureSelector:
     """
     Feature selection for predictive models using various algorithms.
@@ -34,26 +35,27 @@ class FeatureSelector:
         l1_grid_size (int): Number of points in L1 regularization grid.
         iv_threshold (float): Minimum information value required to keep a feature.
     """
+    selection_type: str
+    random_state: int
+    class_weight: str
+    cv: int
+    n_jobs: int
+    max_vars: int
+    direction: str
+    scoring: str
+    l1_exp_scale: int
+    l1_grid_size: int
+    iv_threshold: float
 
-    def __init__(
-            self, selection_type: str, random_state: int, class_weight: str,
-            cv: int, n_jobs: int, max_vars: int, direction: str,
-            scoring: str, l1_exp_scale: int, l1_grid_size: int,
-            iv_threshold: float
-    ):
-        self.selection_type = selection_type
-        self.random_state = random_state
-        self.class_weight = class_weight
-        self.cv = cv
-        self.n_jobs = n_jobs
-        self.max_vars = max_vars
-        self.direction = direction
-        self.scoring = scoring
-        self.l1_exp_scale = l1_exp_scale
-        self.l1_grid_size = l1_grid_size
-        self.iv_threshold = iv_threshold
+    def __post_init__(self):
+        self._validate_inputs()
+        self.selector = self._get_selector()
 
-        self.selector = self._get_selector(self.selection_type)
+    def _validate_inputs(self) -> None:
+        """Validate input parameters"""
+        valid_selection_types = {'rfe', 'sfs', 'iv'}
+        if self.selection_type not in valid_selection_types:
+            raise ValueError(f'Unknown selection type: {self.selection_type}. Must be one of {valid_selection_types}')
 
     def select(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
         """
