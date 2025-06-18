@@ -10,3 +10,4 @@ core/.mypy_cache/
 poetry.lock
 test.py
 .DS_Store
+.venv/

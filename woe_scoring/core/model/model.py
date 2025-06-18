@@ -12,46 +12,99 @@ from sklearn.svm import l1_min_c
 
 
 class SMWrapper(BaseEstimator, RegressorMixin):
-    """A universal sklearn-style wrapper for statsmodels regressors"""
+    """ A universal sklearn-style wrapper for statsmodels regressors """
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.model_ = None
 
-    def fit(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> "SMWrapper":
-        try:
-            # sm.add_constant can raise error if dataframe is empty or has problematic dtypes
-            X_const = sm.add_constant(data)
-            self.model_ = sm.Logit(target, X_const).fit()
-        except Exception as e:
-            # Log error: print(f"Error fitting statsmodels Logit: {e}")
-            raise RuntimeError(f"Failed to fit statsmodels Logit model: {e}") from e
+    def fit(self, data, target):
+        """
+        Fits a logistic regression model to the given data and target.
+
+        Args:
+            data: pandas.DataFrame or numpy.ndarray
+                The input data matrix of shape (n_samples, n_features).
+            target: pandas.Series or numpy.ndarray
+                The target vector of shape (n_samples,).
+
+        Returns:
+            self: LogisticRegression
+                The fitted model.
+        """
+        # Add constant term (intercept) and fit the model
+        X_with_const = sm.add_constant(data)
+        self.model_ = sm.Logit(target, X_with_const).fit(disp=0)  # Suppress convergence messages
         return self
 
-    def predict(self, data: pd.DataFrame) -> np.ndarray:
-        if self.model_ is None:
-            raise ValueError("Model not fitted. Call fit() first.")
-        try:
-            X_const = sm.add_constant(data)
-            decision_probs = self.model_.predict(X_const)
-            decision = decision_probs > 0.5
-            return np.asarray(decision, dtype=np.int64)
-        except Exception as e:
-            # Log error: print(f"Error in SMWrapper predict: {e}")
-            raise RuntimeError(f"Statsmodels prediction failed: {e}") from e
+    def predict(self, data):
+        """
+        Predict the binary outcome of a dataset using the fitted logistic regression model.
 
-    def predict_proba(self, data: pd.DataFrame) -> np.ndarray:
-        if self.model_ is None:
-            raise ValueError("Model not fitted. Call fit() first.")
-        try:
-            X_const = sm.add_constant(data)
-            decision_probs = self.model_.predict(X_const)
-            return np.column_stack([1 - decision_probs, decision_probs])
-        except Exception as e:
-            # Log error: print(f"Error in SMWrapper predict_proba: {e}")
-            raise RuntimeError(f"Statsmodels probability prediction failed: {e}") from e
+        Args:
+            data (array-like): The dataset to predict, with shape (n_samples, n_features).
+
+        Returns:
+            numpy.ndarray: The predicted binary outcomes, with shape (n_samples,).
+        """
+        # Add constant term and predict
+        X_with_const = sm.add_constant(data)
+        # Convert probabilities to binary predictions using 0.5 threshold
+        decision = self.model_.predict(X_with_const) > 0.5
+        # Ensure integer type for classification results
+        return np.array(decision, dtype=np.int64)
+
+    def predict_proba(self, data):
+        """
+        Predict class probabilities for input data.
+
+        Args:
+            data (array-like): Input data to predict probabilities for.
+
+        Returns:
+            array: An array of shape (n_samples, 2) containing the predicted
+            probabilities for each class, where n_samples is the number of
+            samples in the input data. The first column contains the probability
+            of the negative class and the second column contains the probability
+            of the positive class.
+        """
+        # Add constant term (intercept)
+        X_with_const = sm.add_constant(data)
+
+        # Get positive class probabilities
+        pos_proba = self.model_.predict(X_with_const)
+
+        # Stack negative and positive probabilities
+        decision_2d = np.column_stack((1 - pos_proba, pos_proba))
+
+        return decision_2d
 
 
 class Model:
+    """
+    Initialize and manage a predictive model with standardized interface.
+
+    This class provides a uniform API for different model types (sklearn or statsmodels),
+    handling model creation, training, and evaluation.
+
+    Args:
+        model_type (str): Model implementation to use ('sklearn' or 'statsmodels')
+        l1_exp_scale (int): Exponent scale for L1 regularization grid
+        l1_grid_size (int): Number of grid points for L1 regularization search
+        cv (int): Number of cross-validation folds
+        class_weight (str): Class weighting strategy for imbalanced datasets
+        random_state (int): Random seed for reproducibility
+        n_jobs (int): Number of CPU cores for parallelization
+        scoring (str): Metric for model evaluation
+
+    Attributes:
+        coef_: Model coefficients
+        intercept_: Model intercept
+        feature_names_: Features used in the model
+        model_score_: Cross-validation performance score
+        pvalues_: Statistical significance of each feature
+    """
+
+
     def __init__(
             self,
             model_type: str,
@@ -72,14 +125,24 @@ class Model:
         self.l1_exp_scale = l1_exp_scale
         self.l1_grid_size = l1_grid_size
 
-        self.model = self._get_model(self.model_type)
-        self.coef_: List[float] = []
-        self.intercept_: float = 0.0
-        self.feature_names_: List[str] = []
-        self.model_score_: float = 0.0
-        self.pvalues_: List[float] = []
-        self.model_results: Any = None
+        self.model = self._get_model(model_type)
+        self.coef_ = []
+        self.intercept_ = 0.0
+        self.feature_names_ = []
+        self.model_score_ = 0.0
+        self.pvalues_ = []
 
+    def get_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> callable:
+        """
+        Returns a callable object that can be used to make predictions based on the provided data and target.
+
+        :param data: The input data to use for making predictions.
+        :type data: pd.DataFrame
+        :param target: The target values to use for making predictions.
+        :type target: Union[pd.Series, np.ndarray]
+        :return: A callable object that can be used to make predictions.
+        :rtype: callable
+        """
     # @lru_cache(maxsize=None)
     def get_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> Any:
         return self.model(data, target)
@@ -91,120 +154,121 @@ class Model:
         }
         if model_type not in model_types:
             raise ValueError(f'Unknown model type: {model_type}. Should be either "sklearn" or "statsmodels"')
-        return model_types[model_type]
 
-    def _get_sklearn_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> Any:
-        try:
-            Cs = l1_min_c(data, target, loss="log", fit_intercept=True) * np.logspace(
-                0, self.l1_exp_scale, self.l1_grid_size
-            )
-            model = LogisticRegressionCV(
-                Cs=Cs,
-                cv=self.cv,
-                class_weight=self.class_weight,
-                random_state=self.random_state,
-                n_jobs=self.n_jobs,
-                tol=1e-5,
-                max_iter=5000,
-                scoring=self.scoring
-            ).fit(data, target)
+    def _get_sklearn_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> callable:
+        """
+        Trains a scikit-learn logistic regression model with regularization.
 
-            self.coef_ = list(model.coef_[0])
-            self.intercept_ = model.intercept_[0]
-            self.feature_names_ = list(data.columns)
+        Args:
+            data (pd.DataFrame): The input data to train the model on.
+            target (Union[pd.Series, np.ndarray]): The target values to train the model on.
 
-            # cross_val_score can also fail
-            cv_scores = cross_val_score(
-                model, data, target, cv=self.cv, n_jobs=self.n_jobs, scoring=self.scoring
-            )
-            self.model_score_ = np.nanmean(cv_scores) if cv_scores is not None and len(cv_scores) > 0 else 0.0
+        Returns:
+            callable: The trained logistic regression model.
+        """
+        # Ensure target is in the right format
+        target_array = target.values if hasattr(target, 'values') else np.array(target)
 
-            self.pvalues_ = list(self._calc_pvalues(model, data))
-            return model
-        except Exception as e:
-            # Log error: print(f"Error fitting sklearn LogisticRegressionCV model: {e}")
-            raise RuntimeError(f"Failed to fit sklearn model: {e}") from e
+        # Calculate optimal regularization strengths
+        base_c = l1_min_c(data, target_array, loss="log", fit_intercept=True)
+        Cs = base_c * np.logspace(0, self.l1_exp_scale, self.l1_grid_size)
 
-    def _get_statsmodels_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> Any:
-        try:
-            model_wrapper = SMWrapper().fit(data, target) # SMWrapper.fit now handles its own errors
-            if model_wrapper.model_ is None: # Should be caught by SMWrapper.fit, but double check
-                raise ValueError("Statsmodels model (SMWrapper.model_) is None after fitting.")
+        # Create and fit model
+        model = LogisticRegressionCV(
+            Cs=Cs,
+            cv=self.cv,
+            class_weight=self.class_weight,
+            random_state=self.random_state,
+            n_jobs=self.n_jobs,
+            tol=1e-5,
+            max_iter=5000,
+            scoring=self.scoring,
+            penalty='l1',
+            solver='liblinear'  # Best for L1 penalty
+        ).fit(data, target_array)
 
-            actual_model = model_wrapper.model_
-            self.coef_ = list(actual_model.params[1:])
-            self.intercept_ = actual_model.params[0]
-            self.feature_names_ = list(data.columns)
+        # Extract model parameters
+        self.coef_ = list(model.coef_[0])
+        self.intercept_ = model.intercept_[0]
+        self.feature_names_ = data.columns.tolist()
 
-            # cross_val_score can also fail
-            cv_scores = cross_val_score(
-                model_wrapper, data, target, cv=self.cv, n_jobs=self.n_jobs, scoring=self.scoring
-            ) # Pass the wrapper
-            self.model_score_ = np.nanmean(cv_scores) if cv_scores is not None and len(cv_scores) > 0 else 0.0
+        # Calculate cross-validation score
+        self.model_score_ = cross_val_score(
+            model, data, target_array, cv=self.cv, n_jobs=self.n_jobs, scoring=self.scoring
+        ).mean()
 
-            self.pvalues_ = list(actual_model.pvalues)[1:]
-            return model_wrapper # Return the wrapper consistent with sklearn model return
-        except Exception as e:
-            # Log error: print(f"Error fitting statsmodels model via SMWrapper: {e}")
-            raise RuntimeError(f"Failed to fit statsmodels model: {e}") from e
+        # Calculate statistical significance
+        self.pvalues_ = list(self._calc_pvalues(model, data))
+
         return model
 
-    def _calc_pvalues(self, model: Any, data: pd.DataFrame) -> np.ndarray:
+    def _get_statsmodels_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> callable:
+        """ Fits a statsmodels model to the given data and target, and returns the trained model.
+
+        Args:
+            data (pd.DataFrame): The input data to be used for training the model.
+            target (Union[pd.Series, np.ndarray]): The target variable to be used for training the model.
+
+        Returns:
+            callable: The trained statsmodels model.
+        """
+
+        model = SMWrapper().fit(data, target)
+        self.coef_ = list(model.model_.params[1:])
+        self.intercept_ = model.model_.params[0]
+        self.feature_names_ = data.columns.to_list()
+        self.model_score_ = cross_val_score(
+            model, data, target, cv=self.cv, n_jobs=self.n_jobs, scoring=self.scoring
+        ).mean()
+        self.pvalues_ = list(model.model_.pvalues)[1:]
+        return model
+
+    def _calc_pvalues(self, model: callable, data: pd.DataFrame) -> np.ndarray:
+        """
+        Calculates p-values for a logistic regression model using the Wald test.
+
+        This implements the statistical test for coefficient significance based on
+        the asymptotic normality of maximum likelihood estimates.
+
+        Args:
+            model: A logistic regression model fit using scikit-learn.
+            data: A Pandas DataFrame of features.
+
+        Returns:
+            A NumPy array of p-values for each feature.
+        """
+        # Get predicted probabilities
+        p = model.predict_proba(data)[:, 1]
+
+        # Combine intercept and coefficients
+        coefs = np.concatenate([model.intercept_, model.coef_[0]])
+
+        # Add column of ones for intercept
+        x_full = np.insert(np.array(data), 0, 1, axis=1)
+
+        # Calculate variance-covariance matrix using Fisher Information Matrix
+        # This is more numerically stable for large datasets
+        weights = p * (1 - p)
+        weighted_x = x_full * np.sqrt(weights[:, np.newaxis])
+        xTx = weighted_x.T @ weighted_x
+
+        # Get inverse of Fisher Information Matrix
         try:
-            # Ensure model has predict_proba, intercept_, and coef_ attributes
-            if not all(hasattr(model, attr) for attr in ['predict_proba', 'intercept_', 'coef_']):
-                # Log: print("Warning: Model for p-value calculation lacks required attributes. Returning empty p-values.")
-                return np.array([]) # Or array of NaNs matching number of coeffs
+            # Try more stable SVD-based pseudo-inverse first
+            vcov = np.linalg.pinv(xTx)
+        except np.linalg.LinAlgError:
+            # Fall back to standard inverse
+            vcov = np.linalg.inv(xTx)
 
-            pred_probs = model.predict_proba(data)[:, 1]
+        # Calculate standard errors
+        se = np.sqrt(np.diag(vcov))
 
-            # Ensure intercept_ and coef_ are available and are numbers/arrays of numbers
-            intercept = model.intercept_
-            coeffs_array = model.coef_[0] # Assuming coef_ is 2D for LogisticRegressionCV
+        # Calculate t-statistics
+        t = coefs / se
 
-            if not (isinstance(intercept, (int, float, np.number)) and isinstance(coeffs_array, np.ndarray)):
-                 # Log: print("Warning: Model intercept_ or coef_ have unexpected types. Returning empty p-values.")
-                return np.array([])
+        # Calculate two-tailed p-values
+        p_values = (1 - norm.cdf(abs(t))) * 2
 
-            model_coefficients = np.concatenate([[intercept], coeffs_array])
+        # Return p-values for features (excluding intercept)
+        return p_values[1:]
 
-            # Ensure data can be converted to numeric array for x_full
-            x_data_array = np.array(data, dtype=float)
-            x_full = np.insert(x_data_array, 0, 1, axis=1) # Add column for intercept
-
-            # Fisher Information Matrix calculation
-            # p * (1-p) can be zero if probabilities are 0 or 1. Add small epsilon for stability if needed.
-            p_times_1_minus_p = pred_probs * (1 - pred_probs)
-            # Add a small epsilon to avoid exact zeros in variance calculation if necessary,
-            # though typically sklearn/statsmodels handles this.
-            # p_times_1_minus_p = np.maximum(p_times_1_minus_p, 1e-9)
-
-            if x_full.shape[0] != len(p_times_1_minus_p):
-                raise ValueError("Shape mismatch between x_full and probability weights for p-value calculation.")
-            if x_full.shape[1] != len(model_coefficients):
-                 raise ValueError("Shape mismatch between x_full columns and number of coefficients.")
-
-
-            fisher_info_matrix_comp = np.einsum('ij,ik,i->jk', x_full, x_full, p_times_1_minus_p)
-
-            if np.linalg.det(fisher_info_matrix_comp) == 0:
-                # Log: print("Warning: Fisher Information Matrix is singular. Cannot calculate p-values via matrix inversion.")
-                return np.full(len(coeffs_array), np.nan) # Return NaNs for p-values
-
-            variance_covariance_matrix = np.linalg.inv(fisher_info_matrix_comp)
-            standard_errors = np.sqrt(np.diag(variance_covariance_matrix))
-
-            z_scores = model_coefficients / standard_errors
-            p_values = 2 * (1 - norm.cdf(np.abs(z_scores)))
-
-            return p_values[1:] # Exclude p-value for intercept
-        except np.linalg.LinAlgError as e:
-            # Log error: print(f"LinAlgError in p-value calculation (e.g., singular matrix): {e}")
-            # Return NaNs for p-values if matrix inversion fails
-            num_coeffs = len(model.coef_[0]) if hasattr(model, 'coef_') and model.coef_ is not None and len(model.coef_) > 0 else 0
-            return np.full(num_coeffs, np.nan)
-        except Exception as e:
-            # Log error: print(f"Unexpected error in _calc_pvalues: {e}")
-            # Fallback to returning NaNs or empty array for p-values
-            num_coeffs = len(model.coef_[0]) if hasattr(model, 'coef_') and model.coef_ is not None and len(model.coef_) > 0 else 0
-            return np.full(num_coeffs, np.nan) # Return NaNs matching number of coefficients
