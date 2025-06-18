@@ -9,3 +9,5 @@ core/.mypy_cache/
 /dist
 poetry.lock
 test.py
+.DS_Store
+.venv/
