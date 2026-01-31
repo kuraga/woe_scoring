@@ -1,9 +1,19 @@
 import copy
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, TypedDict, Optional
 
 import numpy as np
 import pandas as pd
 from scipy.stats import chisquare
+
+
+class BinStats(TypedDict):
+    bin: Union[List, float, str]
+    total: int
+    bad: int
+    pct: float
+    bad_rate: float
+    woe: float
+    iv: float
 
 
 def _chi2(bad_rates: List[Dict], overall_rate: float) -> float:
@@ -204,7 +214,7 @@ def _calc_stats(
     bins: List,
     cat: bool = False,
     refit_fl: bool = False,
-) -> Dict:
+) -> BinStats:
     """Calculate the statistics.
     Args:
         x (pd.DataFrame): Input data.
@@ -290,25 +300,107 @@ def _bin_bad_rates(
     all_bad = y.sum()
     all_good = len(y) - all_bad
 
-    # Determine how many bins to process
-    max_idx = len(bins) if cat or refit_fl else len(bins) - 1
+    # Mask for non-missing values
+    mask = ~pd.isna(x)
+    x_clean = x[mask]
+    y_clean = y[mask]
 
-    # Calculate stats for each bin
-    bad_rates = [
-        _calc_stats(x, y, idx, all_bad, all_good, bins, cat, refit_fl)
-        for idx in range(max_idx)
-    ]
+    if len(x_clean) == 0:
+        return [], 0
 
-    # Sort by bad rate if categorical
+    # Determine bin indices for each sample
+    if cat:
+        # Categorical: Create mapping from value to bin index
+        val_to_idx = {}
+        for idx, bin_vals in enumerate(bins):
+            for val in bin_vals:
+                val_to_idx[val] = idx
+        
+        # Map values to indices. Using pd.Series.map handles various types well.
+        # Fill unmapped values with -1
+        bin_indices = pd.Series(x_clean).map(val_to_idx).fillna(-1).values.astype(int)
+        n_bins = len(bins)
+
+    elif refit_fl:
+        # Numeric Refit: bins are list of [min, max] intervals
+        # Extract edges from intervals to use searchsorted
+        # Assuming intervals are contiguous and sorted: [[e0, e1], [e1, e2], ...]
+        # We can reconstruct edges: [e0, e1, e2, ...]
+        edges = [b[0] for b in bins] + [bins[-1][1]]
+        
+        # Use searchsorted. side='right' with subtraction gives: edges[i] <= x < edges[i+1]
+        bin_indices = np.searchsorted(edges, x_clean, side='right') - 1
+        n_bins = len(bins)
+        
+        # Clip indices to be safe (handle potential out of bound due to float precision or new ranges)
+        # Values < min_edge will be -1, Values >= max_edge will be n_bins
+        # We generally expect data to cover -inf to inf if bins are complete, but in refit they might not be?
+        # Usually WOE bins cover -inf to inf.
+    
+    else:
+        # Numeric Training: bins is list of edges [e0, e1, e2, ...]
+        edges = bins
+        bin_indices = np.searchsorted(edges, x_clean, side='right') - 1
+        n_bins = len(bins) - 1
+
+    # Filter out samples that didn't fall into any bin (index -1 or >= n_bins)
+    valid_mask = (bin_indices >= 0) & (bin_indices < n_bins)
+    
+    # It's possible some values fall outside bins (e.g. during refit if data range changes drastically and bins aren't -inf/inf)
+    # But usually bins start with NINF and end with INF.
+    
+    final_indices = bin_indices[valid_mask]
+    final_y = y_clean[valid_mask]
+
+    # Calculate counts using bincount (extremely fast)
+    # minlength ensures we get counts for all bins including empty ones
+    bin_total = np.bincount(final_indices, minlength=n_bins)
+    bin_bad = np.bincount(final_indices, weights=final_y, minlength=n_bins)
+    
+    # Construct results
+    bad_rates = []
+    
+    for i in range(n_bins):
+        total = int(bin_total[i])
+        bad = int(bin_bad[i])
+        good = total - bad
+        pct = total / len(x) if len(x) > 0 else 0
+        bad_rate = bad / total if total != 0 else 0
+
+        # WOE calculation with smoothing
+        if good == 0 or bad == 0:
+            woe = np.log(((good + 0.5) / all_good) / ((bad + 0.5) / all_bad))
+        else:
+            woe = np.log((good / all_good) / (bad / all_bad))
+
+        iv = ((good / all_good) - (bad / all_bad)) * woe
+
+        # Determine bin value representation
+        if cat or refit_fl:
+            bin_val = bins[i]
+        else:
+            bin_val = [bins[i], bins[i+1]]
+
+        bad_rates.append({
+            "bin": bin_val,
+            "total": total,
+            "bad": bad,
+            "pct": pct,
+            "bad_rate": bad_rate,
+            "woe": woe,
+            "iv": iv,
+        })
+
+    # Sort if categorical
     if cat:
         bad_rates.sort(key=lambda _x: _x["bad_rate"])
 
-    # Calculate overall rate for numerical features
+    # Calculate overall rate
     overall_rate = None
     if not cat:
-        bad = sum(bad_rate["bad"] for bad_rate in bad_rates)
-        total = sum(bad_rate["total"] for bad_rate in bad_rates)
-        overall_rate = bad / total if total > 0 else 0
+        total_sum = sum(b["total"] for b in bad_rates)
+        bad_sum = sum(b["bad"] for b in bad_rates)
+        overall_rate = bad_sum / total_sum if total_sum > 0 else 0
 
     return bad_rates, overall_rate
 
@@ -694,24 +786,59 @@ def num_processing(
 
 
 def _refit_woe_dict(
-    x, y: np.ndarray, woe_dict: Dict = None, cat: bool = False, missing_bin: str = "first"
-) -> Dict:
-    """Refit woe dict.
+    x: np.ndarray,
+    y: np.ndarray,
+    bins: List,
+    type_feature: str = "cat",
+    missing_bin: str = "first",
+) -> List[BinStats]:
+    """
+    Refit woe dict.
+
     Args:
         x: feature values
         y: target values
-        woe_dict: woe dictionary to refit
-        cat: whether the feature is categorical
+        bins: bins list
+        type_feature: whether the feature is categorical
         missing_bin: missing bin strategy
-    Returns:
-        Dict: updated woe dictionary
 
-    This function calculates new WOE values based on the current data distribution
-    while maintaining the binning structure from the original model.
+    Returns:
+        List[BinStats]: updated woe dictionary
     """
-    # For testing, just return a simple dictionary with the required keys
-    # In a real implementation, this would calculate new WOE values based on new data
-    return {"A": 0.5, "B": -0.3, "C": 0.0, "D": 0.2, "Missing": 0.1}
+    x_copy = x.copy()
+    cat = type_feature == "cat"
+
+    # Handle missing values
+    if len(y[pd.isna(x)]) > 0:
+        fill_val = None
+        if missing_bin == "first":
+            if cat:
+                if isinstance(bins[0], list) and len(bins[0]) > 0:
+                    fill_val = bins[0][0]
+                else:
+                    fill_val = -1
+            else:
+                 # Numerical. bins[0] is [min, cut].
+                 fill_val = bins[0][0]
+        elif missing_bin == "last":
+            if cat:
+                if isinstance(bins[-1], list) and len(bins[-1]) > 0:
+                     fill_val = bins[-1][0]
+                else:
+                     fill_val = -1
+            else:
+                fill_val = bins[-1][0]
+        else:
+            # Default fallback
+            fill_val = bins[0][0] if isinstance(bins[0], list) else bins[0]
+        
+        # If we found a valid fill value, apply it
+        if fill_val is not None:
+             x_copy[pd.isna(x)] = fill_val
+
+    bad_rates, _ = _bin_bad_rates(x_copy, y, bins, cat=cat, refit_fl=True)
+    return bad_rates
+
 
 def refit(x, y: np.ndarray, bins: List, type_feature: str, missing_bin: str) -> Dict:
     """Refit woe dict.

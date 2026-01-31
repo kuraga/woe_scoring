@@ -264,26 +264,23 @@ def calc_iv_dict(data: pd.DataFrame, target: np.ndarray, feature: str) -> Dict:
 
 
 def save_reports(
-        model: sm.Logit,
+        model,
         path: str = os.getcwd()
 ) -> None:
     """Save model reports.
     Args:
-        model: Model.
+        model: Model (statsmodels Logit or similar with summary/wald_test_terms methods).
         path: Path to save reports."""
 
-    try:
-        with open(
-                os.path.join(path, "model_summary.txt"), "w"
-        ) as outfile:
-            outfile.write(model.summary().as_text())
+    with open(
+            os.path.join(path, "model_summary.txt"), "w"
+    ) as outfile:
+        outfile.write(model.summary().as_text())
 
-        with open(
-                os.path.join(path, "model_wald.txt"), "w"
-        ) as outfile:
-            model.wald_test_terms().summary_frame().to_string(outfile)
-    except Exception as e:
-        print(f"Problem with saving: {e}")
+    with open(
+            os.path.join(path, "model_wald.txt"), "w"
+    ) as outfile:
+        model.wald_test_terms().summary_frame().to_string(outfile)
 
 
 def generate_sql(
@@ -481,7 +478,9 @@ def _calc_stats_for_feature(
                         )
                     )
 
-    return pd.DataFrame.from_dict(result_dict)
+    df = pd.DataFrame.from_dict(result_dict)
+    df.name = feature.replace("WOE_", "")
+    return df
 
 
 def _update_result_dict(result_dict, feature, model_results, idx) -> None:
@@ -533,7 +532,7 @@ def _calc_stats(
             model_results=model_results,
             factor=factor,
             offset=offset
-        ).rename(feature.replace("WOE_", ""))
+        )
         for idx, feature in enumerate(features_to_process)
     )
 
@@ -691,12 +690,13 @@ def save_scorecard_fn(
         offset=offset
     )
 
+    writer = pd.ExcelWriter(os.path.join(path, "Scorecard.xlsx"), engine="xlsxwriter")
     try:
-        writer = pd.ExcelWriter(os.path.join(path, "Scorecard.xlsx"), engine="xlsxwriter")
         _build_excel_sheet_with_charts(
             feature_stats=feature_stats,
             writer=writer
         )
         writer.save()
-    except Exception as e:
-        print(f"Problem with saving: {e}")
+    except Exception:
+        writer.close()
+        raise

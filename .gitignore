@@ -11,3 +11,5 @@ poetry.lock
 test.py
 .DS_Store
 .venv/
+.gemini/
+gha-creds-*.json

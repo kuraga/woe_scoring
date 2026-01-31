@@ -22,7 +22,7 @@ setup(
     author=MAINTAINER,
     author_email=MAINTAINER_EMAIL,
     url=URL,
-    download_url="https://github.com/kiraplenkin/woe_scoring/archive/refs/tags/v0.4.0.tar.gz",
+    download_url="https://github.com/kiraplenkin/woe_scoring/archive/refs/tags/v1.0.3.tar.gz",
     license=LICENSE,
     packages=find_packages(),
     include_package_data=True,
@@ -34,12 +34,14 @@ setup(
         "LogisticRegression"
     ],
     install_requires=[
-        "numpy>=1.17.0",
-        "pandas>=1.0.0",
-        "scikit-learn>=0.23.0",
-        "statsmodels>=0.11.0",
-        "scipy>=1.4.0",
-        "lxml>=4.5.0"
+        "numpy>=1.19.5",
+        "pandas>=1.2.2",
+        "scikit-learn>=0.24.1",
+        "statsmodels>=0.12.2",
+        "scipy>=1.6.1",
+        "lxml>=4.8.0",
+        "joblib>=1.1.0",
+        "xlsxwriter>=3.0.0"
     ],
     python_requires='>=3.7',
     zip_safe=False,

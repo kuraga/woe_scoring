@@ -178,13 +178,33 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 # Convert to category first for efficiency with large datasets
                 data.loc[:, new_feature] = data[feature].map(bin_map)
             else:
-                # Numerical features
-                for bin_values in woe_iv_feature:
-                    mask = np.logical_and(
-                        data[feature] >= np.min(bin_values["bin"]),
-                        data[feature] < np.max(bin_values["bin"])
+                # Numerical features - Optimized using pd.cut
+                if len(woe_iv_feature) > 0:
+                    # Construct bin edges from contiguous intervals
+                    # bin_values["bin"] is [min, max]
+                    edges = [woe_iv_feature[0]["bin"][0]] + [b["bin"][1] for b in woe_iv_feature]
+                    labels = [b["woe"] for b in woe_iv_feature]
+                    
+                    # pd.cut handles binning efficiently
+                    # right=False means intervals are [a, b) matching original logic
+                    # include_lowest=True extends the first interval to be [a, b) as well (mostly relevant if data == min)
+                    data[new_feature] = pd.cut(
+                        data[feature],
+                        bins=edges,
+                        labels=labels,
+                        right=False,
+                        include_lowest=True
                     )
-                    data.loc[mask, new_feature] = bin_values["woe"]
+                    
+                    # Convert categorical result to float (pd.cut returns category/object)
+                    # Use to_numeric or astype, but handle NaNs gracefully (they remain NaN)
+                    if data[new_feature].dtype.name == 'category':
+                         data[new_feature] = data[new_feature].astype(float)
+                    else:
+                         data[new_feature] = pd.to_numeric(data[new_feature], errors='coerce')
+                else:
+                    # No bins, everything is NaN (already initialized)
+                    pass
 
             # Handle missing values efficiently
             missing_bin = woe_iv["missing_bin"]
@@ -450,6 +470,24 @@ class CreateModel(BaseEstimator, TransformerMixin):
         self.feature_names_ = selected_model.feature_names_
         self.model_score_ = selected_model.model_score_
         self.pvalues_ = selected_model.pvalues_
+
+        # Construct model_results DataFrame for save_scorecard
+        # Expected structure:
+        # Column 0: Feature names (starting with 'const')
+        # Column 'coef': Coefficients
+        # Column 'P>|z|': P-values
+        
+        # Create lists for DataFrame construction
+        res_features = ['const'] + self.feature_names_
+        res_coefs = [self.intercept_] + self.coef_
+        # Pad p-values with NaN for intercept if not available, or 0.0
+        res_pvalues = [0.0] + self.pvalues_
+        
+        self.model_results = pd.DataFrame({
+            'const': res_features, # Column name doesn't matter for iloc[:, 0], but naming it 'const' or 'Feature' is cleaner
+            'coef': res_coefs,
+            'P>|z|': res_pvalues
+        })
 
         return self.model
 

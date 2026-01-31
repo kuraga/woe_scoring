@@ -140,42 +140,55 @@ class TestWOETransformer(unittest.TestCase):
                 os.remove(temp_file)
 
     def test_refit(self):
-        """Test refitting the WOE transformer with new data"""
-        # Create a sample woe_iv_dict for testing
-        self.transformer.woe_iv_dict = [
-            {"numeric1": [{"bin": 1, "woe": 0.5}], "missing_bin": "first", "type_feature": "num"},
-            {"numeric2": [{"bin": 2, "woe": -0.3}], "missing_bin": "last", "type_feature": "num"},
-            {"categorical1": [{"bin": "A", "woe": 0.1}], "missing_bin": "first", "type_feature": "cat"},
-            {"categorical2": [{"bin": "X", "woe": 0.2}], "missing_bin": "last", "type_feature": "cat"}
-        ]
-        original_woe_iv_dict_len = len(self.transformer.woe_iv_dict)
-
-        # Create new data with same features but different distributions
-        np.random.seed(43)  # Different seed
-        n_samples = 150
-        new_X = pd.DataFrame({
-            'numeric1': np.random.normal(1, 2, n_samples),  # Different distribution
-            'numeric2': np.random.uniform(-3, 7, n_samples),  # Different range
-            'categorical1': np.random.choice(['A', 'B', 'C', 'D'], n_samples),
-            'categorical2': np.random.choice(['X', 'Y', 'Z'], n_samples)
+        """Test refitting the WOE transformer with new data using real logic"""
+        # Create initial training data
+        df_train = pd.DataFrame({
+            'feature': [1, 1, 1, 2, 2, 3, 3, 3] * 100,
+            'target':  [0, 0, 1, 0, 1, 1, 1, 1] * 100
         })
-        new_y = np.random.binomial(1, 0.4, n_samples)  # Different class balance
 
-        # Mock the refit method
-        def mock_refit(X, y):
-            # Just update feature_names to simulate refitting
-            self.transformer.feature_names = X.columns.tolist()
+        # Create new data with different distribution but same bins
+        # Here bin 1 becomes very risky (all 1s), bin 3 becomes safe (all 0s)
+        df_new = pd.DataFrame({
+            'feature': [1, 1, 1, 2, 2, 3, 3, 3] * 100,
+            'target':  [1, 1, 1, 0, 1, 0, 0, 0] * 100
+        })
 
-        self.transformer.refit = mock_refit
+        # Initialize a real transformer (not the mocked one from setUp)
+        encoder = WOETransformer(max_bins=3, min_pct_group=0.01)
+        encoder.fit(df_train, df_train['target'])
 
-        # Refit the transformer
-        self.transformer.refit(new_X, new_y)
+        # Check that we have bins
+        self.assertTrue(len(encoder.woe_iv_dict) > 0)
+        self.assertEqual(list(encoder.woe_iv_dict[0].keys())[0], 'feature')
 
-        # Check if woe_iv_dict still exists
-        self.assertIsNotNone(self.transformer.woe_iv_dict)
+        # Save original WOE values
+        woe_dict_orig = encoder.woe_iv_dict[0]['feature']
+        original_woe_values = [b['woe'] for b in woe_dict_orig]
 
-        # Check that refitting maintained the same number of features
-        self.assertEqual(original_woe_iv_dict_len, len(self.transformer.woe_iv_dict))
+        # Refit with new data
+        encoder.refit(df_new, df_new['target'])
+
+        # Get new WOE values
+        woe_dict_new = encoder.woe_iv_dict[0]['feature']
+        new_woe_values = [b['woe'] for b in woe_dict_new]
+
+        # Check that we got a list of dicts (BinStats)
+        self.assertIsInstance(woe_dict_new, list)
+        self.assertIn('woe', woe_dict_new[0])
+
+        # Check that values have changed (reflecting the new distribution)
+        self.assertNotEqual(new_woe_values, original_woe_values)
+
+        # Check specific direction of change
+        # Bin 1 (val=1) became all bad -> WOE should decrease (become more negative) or stay negative
+        # Bin 3 (val=3) became all good -> WOE should increase (become positive)
+        # Note: bins might be sorted by value or bad rate, so we need to find the correct bin
+        # Assuming numerical bins are sorted by value:
+        # Bin 1 corresponds to value 1.
+        # However, _num_binning sorts bins.
+        # Let's inspect the bins to be sure.
+        # But simply asserting they changed is enough to prove refit isn't a stub.
 
     def test_transform_with_new_categories(self):
         """Test transformer behavior with unseen categories"""

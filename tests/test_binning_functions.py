@@ -125,7 +125,8 @@ class TestBinningFunctions(unittest.TestCase):
         y = np.array([1, 0, 1, 0, 1])
 
         # Prepare the inputs
-        bins = [1, 2, 3]  # List of unique bin values
+        # For categorical processing, bins must be a list of lists of values
+        bins = [[1], [2], [3]]
 
         # Call _bin_bad_rates with correct parameters
         result, _ = _bin_bad_rates(x, y, bins, cat=True)
@@ -139,13 +140,14 @@ class TestBinningFunctions(unittest.TestCase):
             self.assertIn('bad_rate', bin_dict)
 
         # Check calculations for specific bins
-        bin1 = next((b for b in result if b['bin'] == 1), None)
+        # Note: result elements have 'bin' key which is the list [val]
+        bin1 = next((b for b in result if b['bin'] == [1]), None)
         self.assertIsNotNone(bin1)
         self.assertEqual(bin1['total'], 2)
         self.assertEqual(bin1['bad'], 2)
         self.assertEqual(bin1['bad_rate'], 1.0)
 
-        bin2 = next((b for b in result if b['bin'] == 2), None)
+        bin2 = next((b for b in result if b['bin'] == [2]), None)
         self.assertIsNotNone(bin2)
         self.assertEqual(bin2['total'], 2)
         self.assertEqual(bin2['bad'], 1)
@@ -318,34 +320,57 @@ class TestBinningFunctions(unittest.TestCase):
 
     def test_refit_woe_dict(self):
         """Test the _refit_woe_dict function"""
-        # Create a simple woe_dict for testing
-        woe_dict = {
-            'A': 0.5,
-            'B': -0.3,
-            'C': 0.0,
-            'Missing': 0.1
-        }
-
+        # Create bins structure (list of lists for categorical)
+        bins = [['A'], ['B'], ['C']]
+        
         # Create test data with matching categories
-        test_data = pd.Series(['A', 'B', 'A', 'C', 'B', 'D'])  # 'D' is a new category
+        test_data = pd.Series(['A', 'B', 'A', 'C', 'B', 'D'])  # 'D' is a new category (missing)
         test_target = pd.Series([1, 0, 1, 0, 1, 1])
-
+        
         missing_bin = "first"
-        # Simplify the test to match the actual implementation
-        new_woe_dict = _refit_woe_dict(
-            x=test_data,
-            y=test_target,
-            woe_dict=woe_dict,
-            cat=True,
+        
+        # Call with correct signature
+        new_woe_list = _refit_woe_dict(
+            x=test_data.values,
+            y=test_target.values,
+            bins=bins,
+            type_feature='cat',
             missing_bin=missing_bin
         )
-
-        # Simplified assertions since _refit_woe_dict may have a different implementation
-        # Just check that we get back a dictionary of some kind
-        self.assertIsInstance(new_woe_dict, dict)
-
-        # Check that at least some keys are present
-        self.assertGreater(len(new_woe_dict), 0)
+        
+        # Check that we get back a list of bin stats
+        self.assertIsInstance(new_woe_list, list)
+        self.assertGreater(len(new_woe_list), 0)
+        
+        # Check structure of the first bin result
+        first_bin = new_woe_list[0]
+        self.assertIsInstance(first_bin, dict)
+        self.assertIn('woe', first_bin)
+        self.assertIn('bin', first_bin)
+        
+        # Check that missing value 'D' was handled (should be in the first bin due to missing_bin="first")
+        # Note: implementation of _refit_woe_dict fills NA with bins[0][0]
+        # But 'D' is not NA, it's just a value not in bins. 
+        # Wait, the logic in _cat_binning normally groups unknown values? 
+        # No, _cat_binning creates bins from unique values.
+        # If we refit, values not in bins will be filtered out by _calc_stats mask unless handled.
+        # Let's check _calc_stats: mask = np.isin(x_not_na, value). 
+        # So 'D' will be ignored (mask False) and not counted in any bin.
+        # Only explicit NaNs are handled by fill_val in _refit_woe_dict.
+        # To test missing handling properly, let's inject a NaN.
+        
+        test_data_nan = pd.Series(['A', 'B', np.nan])
+        test_target_nan = pd.Series([1, 0, 1])
+        
+        new_woe_list_nan = _refit_woe_dict(
+            x=test_data_nan.values,
+            y=test_target_nan.values,
+            bins=bins,
+            type_feature='cat',
+            missing_bin='first'
+        )
+        # Verify result is valid
+        self.assertIsInstance(new_woe_list_nan, list)
 
 
 if __name__ == '__main__':
