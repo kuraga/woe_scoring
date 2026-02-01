@@ -25,7 +25,7 @@ setup(
     author=MAINTAINER,
     author_email=MAINTAINER_EMAIL,
     url=URL,
-    download_url="https://github.com/kiraplenkin/woe_scoring/archive/refs/tags/v2.0.0.tar.gz",
+    download_url="https://github.com/kiraplenkin/woe_scoring/archive/refs/tags/v2.1.0.tar.gz",
     license=LICENSE,
     packages=find_packages(),
     include_package_data=True,
