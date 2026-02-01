@@ -666,7 +666,7 @@ def _num_binning(
         max_bins = _calc_max_bins(len(np.unique(x[~pd.isna(x)])), max_bins)
 
     # Create initial bin boundaries
-    bins = [np.NINF]  # Start with negative infinity
+    bins = [-np.inf]  # Start with negative infinity
 
     # If we have more unique values than max_bins, use quantiles
     non_na_values = x[~pd.isna(x)]
@@ -707,7 +707,7 @@ def _num_binning(
             if na_bad_rate < bad_rates[1]["bad_rate"]:
                 x_copy = np.copy(x)
                 x_copy[pd.isna(x)] = np.amin(x[~pd.isna(x)]) - 1
-                bins = [np.NINF, np.amin(x[~pd.isna(x)])] + bins[1:]
+                bins = [-np.inf, np.amin(x[~pd.isna(x)])] + bins[1:]
                 missing_bin = "first"
             else:
                 x_copy = np.copy(x)
