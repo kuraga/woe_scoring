@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.feature_selection import RFECV, SequentialFeatureSelector
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import l1_min_c
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 from .functions import calc_iv_dict
 
@@ -16,13 +17,14 @@ class FeatureSelector:
 
     This class provides a unified interface for different feature selection strategies
     including recursive feature elimination (RFE), sequential feature selection (SFS),
-    and information value (IV) based selection.
+    information value (IV), and Variance Inflation Factor (VIF).
 
     Args:
-        selection_type (str): Feature selection algorithm to use: 'rfe', 'sfs', or 'iv'.
+        selection_type (str): Feature selection algorithm to use: 'rfe', 'sfs', 'iv', or 'vif'.
             - 'rfe': Recursive Feature Elimination with cross-validation
             - 'sfs': Sequential Feature Selection (forward or backward)
             - 'iv': Information Value based selection
+            - 'vif': Variance Inflation Factor for removing multicollinearity
         random_state (int): Random seed for reproducibility.
         class_weight (str): Class weights strategy for imbalanced data ('balanced' or None).
         cv (int): Number of cross-validation folds.
@@ -33,13 +35,14 @@ class FeatureSelector:
         l1_exp_scale (int): Exponent scale for L1 regularization grid.
         l1_grid_size (int): Number of points in L1 regularization grid.
         iv_threshold (float): Minimum information value required to keep a feature.
+        vif_threshold (float): Maximum VIF value allowed (default 10.0).
     """
 
     def __init__(
             self, selection_type: str, random_state: int, class_weight: str,
             cv: int, n_jobs: int, max_vars: int, direction: str,
             scoring: str, l1_exp_scale: int, l1_grid_size: int,
-            iv_threshold: float
+            iv_threshold: float, vif_threshold: float = 10.0
     ):
         self.selection_type = selection_type
         self.random_state = random_state
@@ -52,6 +55,7 @@ class FeatureSelector:
         self.l1_exp_scale = l1_exp_scale
         self.l1_grid_size = l1_grid_size
         self.iv_threshold = iv_threshold
+        self.vif_threshold = vif_threshold
 
         self.selector = self._get_selector(self.selection_type)
 
@@ -78,7 +82,7 @@ class FeatureSelector:
         Returns the appropriate feature selection function based on selection_type.
 
         Args:
-            selection_type: Type of feature selection ('rfe', 'sfs', or 'iv')
+            selection_type: Type of feature selection ('rfe', 'sfs', 'iv', or 'vif')
 
         Returns:
             Function that implements the selected feature selection method
@@ -89,7 +93,8 @@ class FeatureSelector:
         selection_methods = {
             'rfe': self._select_by_rfe,
             'sfs': self._select_by_sfs,
-            'iv': self._select_by_iv
+            'iv': self._select_by_iv,
+            'vif': self._select_by_vif
         }
 
         if selection_type in selection_methods:
@@ -99,6 +104,77 @@ class FeatureSelector:
             f'Unknown feature selection type: {selection_type}. '
             f'Should be one of: {", ".join(selection_methods.keys())}'
         )
+
+    def _select_by_vif(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
+        """
+        Selects features by iteratively removing the feature with the highest VIF
+        exceeding the threshold.
+
+        Args:
+            data: Input dataset containing features
+            target: Target variable (not used for VIF but kept for consistency)
+            feature_names: List of feature names to consider
+
+        Returns:
+            List of selected feature names
+        """
+        # Handle empty feature list
+        if not feature_names:
+            return []
+
+        # Make a copy of the list to avoid modifying the original
+        selected_features = list(feature_names)
+        
+        while len(selected_features) > 1:
+            # Create a dataframe with current features and a constant for intercept
+            X = data[selected_features].copy()
+            # Handle potential NaNs by filling with 0 or mean (though WOE data shouldn't have NaNs)
+            X = X.fillna(0)
+            X['const'] = 1
+            
+            # Calculate VIF for each feature (excluding const)
+            vif_data = pd.DataFrame()
+            vif_data["feature"] = selected_features
+            
+            # Index of features in X matches index in selected_features (0 to N-1)
+            # 'const' is at index N
+            vif_data["VIF"] = [
+                variance_inflation_factor(X.values, i)
+                for i in range(len(selected_features))
+            ]
+            
+            # Find max VIF
+            max_vif = vif_data["VIF"].max()
+            
+            # If max VIF is below threshold, we are done
+            if max_vif < self.vif_threshold:
+                break
+                
+            # Otherwise, remove the feature with max VIF
+            feature_to_remove = vif_data.loc[vif_data["VIF"] == max_vif, "feature"].values[0]
+            selected_features.remove(feature_to_remove)
+            
+            # Check if we hit max_vars limit (optional: could also enforce this post-loop)
+            if self.max_vars and len(selected_features) <= self.max_vars:
+                # If we need to reduce further to meet max_vars, VIF alone might not be the best criterion 
+                # (it removes correlated features, not necessarily least predictive ones). 
+                # However, typically VIF is a preprocessing step.
+                # Here we strictly follow VIF threshold logic.
+                pass
+
+        # If max_vars is specified and we still have too many features, 
+        # we might need to cut more? 
+        # But VIF is about correlation. Let's just return what passed the threshold.
+        # If user wants strict max_vars, they should probably use SFS/RFE after VIF.
+        # However, to respect the interface:
+        if self.max_vars and len(selected_features) > self.max_vars:
+             # Just truncate? Or warn? Truncating arbitrary features is bad.
+             # Let's keep all valid features and let the user handle max_vars via another method if needed.
+             # Or, strictly speaking, this method primarily filters by VIF.
+             pass
+
+        return selected_features
+
 
     def _select_by_iv(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
         """

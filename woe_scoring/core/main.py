@@ -76,8 +76,8 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         self.classes_ = None
         self.max_bins = max_bins
         self.min_pct_group = min_pct_group
-        self.cat_features = cat_features or []
-        self.special_cols = special_cols or []
+        self.cat_features = cat_features
+        self.special_cols = special_cols
         self.cat_features_threshold = cat_features_threshold
         self.diff_woe_threshold = diff_woe_threshold
         self.n_jobs = n_jobs
@@ -97,22 +97,24 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         :param target: A pandas Series or numpy array with the target variable.
         :return: None
         """
+        special_cols = self.special_cols or []
+        cat_features = self.cat_features or []
 
-        data, self.feature_names = prepare_data(data=data, special_cols=self.special_cols)
+        data, self.feature_names = prepare_data(data=data, special_cols=special_cols)
         self.classes_ = unique_labels(target)
 
-        if len(self.cat_features) == 0 and self.cat_features_threshold > 0:
-            self.cat_features = find_cat_features(
+        if len(cat_features) == 0 and self.cat_features_threshold > 0:
+            cat_features = find_cat_features(
                 data=data,
                 feature_names=self.feature_names,
                 cat_features_threshold=self.cat_features_threshold
             )
 
-        if len(self.cat_features) > 0:
+        if len(cat_features) > 0:
             self.num_features = [
                 feature
                 for feature in self.feature_names
-                if feature not in self.cat_features
+                if feature not in cat_features
             ]
             self.woe_iv_dict = Parallel(n_jobs=self.n_jobs)(
                 delayed(cat_processing)(
@@ -121,7 +123,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                     self.min_pct_group,
                     self.max_bins,
                     self.diff_woe_threshold
-                ) for col in self.cat_features
+                ) for col in cat_features
             )
         else:
             self.num_features = self.feature_names
@@ -138,6 +140,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         )
 
         self.woe_iv_dict += num_features_res
+        
+        # Store effective cat_features for transform
+        self.cat_features_ = cat_features
 
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -152,6 +157,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
 
         data = data.copy()
         features_to_delete = []
+        
+        # Use fitted cat_features if available
+        cat_features = getattr(self, 'cat_features_', self.cat_features or [])
 
         # Pre-create all new feature columns
         for woe_iv in self.woe_iv_dict:
@@ -168,7 +176,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             new_feature = self.prefix + feature
 
             # Apply bins based on feature type
-            if feature in self.cat_features:
+            if feature in cat_features:
                 # Categorical features - vectorized approach using map with default to NaN
                 bin_map = {}
                 for bin_values in woe_iv_feature:
@@ -193,7 +201,8 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                         bins=edges,
                         labels=labels,
                         right=False,
-                        include_lowest=True
+                        include_lowest=True,
+                        ordered=False
                     )
                     
                     # Convert categorical result to float (pd.cut returns category/object)
@@ -327,15 +336,17 @@ class CreateModel(BaseEstimator, TransformerMixin):
             l1_exp_scale: int = 4,
             l1_grid_size: int = 20,
             scoring: str = "roc_auc",
+            vif_threshold: float = 10.0,
     ):
         self.selection_method = selection_method
         self.model_type = model_type
         self.max_vars = max_vars
-        self.special_cols = special_cols or []
-        self.unused_cols = unused_cols or []
+        self.special_cols = special_cols
+        self.unused_cols = unused_cols
         self.n_jobs = n_jobs
         self.gini_threshold = gini_threshold
         self.iv_threshold = iv_threshold
+        self.vif_threshold = vif_threshold
         self.corr_threshold = corr_threshold
         self.min_pct_group = min_pct_group
         self.random_state = random_state
@@ -367,12 +378,16 @@ class CreateModel(BaseEstimator, TransformerMixin):
         Returns:
             The fitted model.
         """
+        # Resolve parameters
+        special_cols = self.special_cols or []
+        unused_cols = self.unused_cols or []
+
         # Prepare data and filter features
-        data, self.feature_names_ = prepare_data(data=data, special_cols=self.special_cols)
+        data, self.feature_names_ = prepare_data(data=data, special_cols=special_cols)
 
         # Remove unused columns if specified
-        if self.unused_cols:
-            self.feature_names_ = [f for f in self.feature_names_ if f not in self.unused_cols]
+        if unused_cols:
+            self.feature_names_ = [f for f in self.feature_names_ if f not in unused_cols]
 
         # Calculate max_vars if it's a ratio
         if self.max_vars is not None and self.max_vars < 1:
@@ -414,7 +429,8 @@ class CreateModel(BaseEstimator, TransformerMixin):
             l1_exp_scale=self.l1_exp_scale,
             l1_grid_size=self.l1_grid_size,
             scoring=self.scoring,
-            iv_threshold=self.iv_threshold
+            iv_threshold=self.iv_threshold,
+            vif_threshold=self.vif_threshold
         )
 
         # Select initial features and check for correlations
@@ -489,7 +505,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
             'P>|z|': res_pvalues
         })
 
-        return self.model
+        return self
 
     def save_reports(self, path: str):
         save_reports(self.model, path)
