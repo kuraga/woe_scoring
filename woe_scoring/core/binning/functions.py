@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Union, TypedDict, Optional
 import numpy as np
 import pandas as pd
 from scipy.stats import chisquare
+from sklearn.tree import DecisionTreeClassifier
 
 
 class BinStats(TypedDict):
@@ -27,6 +28,100 @@ def _chi2(bad_rates: List[Dict], overall_rate: float) -> float:
     f_obs = [_bin["bad"] for _bin in bad_rates]
     f_exp = [_bin["total"] * overall_rate for _bin in bad_rates]
     return chisquare(f_obs=f_obs, f_exp=f_exp)[0]
+
+
+def _dt_binning(
+    x: np.ndarray,
+    y: np.ndarray,
+    min_pct_group: float,
+    max_bins: Union[int, float],
+) -> Tuple[List[Dict], str]:
+    """
+    Binning using Decision Tree.
+
+    Args:
+        x: Feature values.
+        y: Target values.
+        min_pct_group: Minimum percentage of samples per bin.
+        max_bins: Maximum number of bins.
+
+    Returns:
+        Tuple[List[Dict], str]: Binning result and missing bin position.
+    """
+    missing_bin = None
+    
+    # Handle missing values
+    mask = ~pd.isna(x)
+    x_clean = x[mask].reshape(-1, 1)
+    y_clean = y[mask]
+    
+    if len(x_clean) == 0:
+        return [], missing_bin
+
+    # Handle max_bins as ratio
+    if max_bins < 1:
+        max_bins = _calc_max_bins(len(x_clean), max_bins)
+    max_bins = max(2, int(max_bins))
+
+    # Calculate min_samples_leaf based on min_pct_group
+    min_samples_leaf = int(len(x_clean) * min_pct_group)
+    min_samples_leaf = max(1, min_samples_leaf)
+
+    # Fit Decision Tree
+    # max_leaf_nodes corresponds to max_bins
+    clf = DecisionTreeClassifier(
+        criterion='entropy', # entropy minimizes information/maximizes IG, similar to IV
+        max_leaf_nodes=max_bins,
+        min_samples_leaf=min_samples_leaf,
+        random_state=42
+    )
+    clf.fit(x_clean, y_clean)
+
+    # Extract thresholds
+    # The tree thresholds are the split points.
+    thresholds = clf.tree_.threshold[clf.tree_.threshold != -2]
+    thresholds = np.sort(np.unique(thresholds))
+    
+    # Construct bins: [-inf, t1, t2, ..., inf]
+    bins = [-np.inf] + list(thresholds) + [np.inf]
+    
+    # Calculate initial stats
+    bad_rates, _ = _bin_bad_rates(x, y, bins)
+    
+    # Handle missing values similar to _num_binning
+    if len(y[pd.isna(x)]) > 0:
+        na_bad_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
+        
+        # Simple heuristic: compare with first and last bin
+        if len(bad_rates) >= 2:
+            if abs(na_bad_rate - bad_rates[0]["bad_rate"]) < abs(na_bad_rate - bad_rates[-1]["bad_rate"]):
+                missing_bin = "first"
+                # Adjust first bin to include missing (logic handled by transformer/refit usually via fillna)
+                # But here we just return the bin edges.
+                # However, for WOE calculation for missing, we usually need to know where it goes.
+                # In _num_binning, x is modified to force missing values into the first bin range.
+                # Let's replicate that logic if needed, or rely on bad_rates calculation which handles it.
+                # Actually, _bin_bad_rates ignores NaNs.
+                # We need to calculate stats for missing bin specifically if we want it merged?
+                # The existing logic in _num_binning modifies x_copy.
+                
+                # Let's align with _num_binning's logic of "assigning" missing to a bin
+                x_copy = np.copy(x)
+                x_copy[pd.isna(x)] = np.amin(x[~pd.isna(x)]) - 1
+                bins = [-np.inf, np.amin(x[~pd.isna(x)])] + bins[1:]
+            else:
+                x_copy = np.copy(x)
+                x_copy[pd.isna(x)] = np.amax(x[~pd.isna(x)]) + 1
+                bins = bins[:2] + [np.amax(x[~pd.isna(x)]), np.inf]
+                missing_bin = "last"
+            
+            # Recalculate with imputed NaNs
+            bad_rates, _ = _bin_bad_rates(x_copy, y, bins)
+        else:
+             # Fallback if tree didn't find splits
+             missing_bin = "first"
+
+    return bad_rates, missing_bin
 
 
 def _check_diff_woe(
@@ -766,18 +861,26 @@ def num_processing(
         min_pct_group: min pct group
         max_bins: max bins
         diff_woe_threshold: diff woe threshold
-        merge_type: merge type for bins
+        merge_type: merge type for bins ('chi2', 'iv', 'monotonic', 'd-tree')
     Returns:
         Dict: binning result"""
 
-    res_dict, missing_position = _num_binning(
-        x=x.values,
-        y=y,
-        min_pct_group=min_pct_group,
-        max_bins=max_bins,
-        diff_woe_threshold=diff_woe_threshold,
-        merge_type=merge_type,
-    )
+    if merge_type == "d-tree":
+        res_dict, missing_position = _dt_binning(
+            x=x.values,
+            y=y,
+            min_pct_group=min_pct_group,
+            max_bins=max_bins,
+        )
+    else:
+        res_dict, missing_position = _num_binning(
+            x=x.values,
+            y=y,
+            min_pct_group=min_pct_group,
+            max_bins=max_bins,
+            diff_woe_threshold=diff_woe_threshold,
+            merge_type=merge_type,
+        )
     return {
         x.name: res_dict,
         "missing_bin": missing_position,
