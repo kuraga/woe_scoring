@@ -1,5 +1,4 @@
-import copy
-from typing import Dict, List, Tuple, Union, TypedDict, Optional
+from typing import Dict, List, Tuple, TypedDict, Union
 
 import numpy as np
 import pandas as pd
@@ -10,23 +9,23 @@ from sklearn.tree import DecisionTreeClassifier
 class BinStats(TypedDict):
     bin: Union[List, float, str]
     total: int
-    bad: int
+    event: int
     pct: float
-    bad_rate: float
+    event_rate: float
     woe: float
     iv: float
 
 
-def _chi2(bad_rates: List[Dict], overall_rate: float) -> float:
-    """Calculate the chi-squared statistic for the given bad rates and overall rate.
+def _chi2(event_rates: List[Dict], overall_rate: float) -> float:
+    """Calculate the chi-squared statistic for the given event rates and overall rate.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
         overall_rate (float): Overall rate.
     Returns:
         float: Chi-squared statistic."""
 
-    f_obs = [_bin["bad"] for _bin in bad_rates]
-    f_exp = [_bin["total"] * overall_rate for _bin in bad_rates]
+    f_obs = [_bin["event"] for _bin in event_rates]
+    f_exp = [_bin["total"] * overall_rate for _bin in event_rates]
     return chisquare(f_obs=f_obs, f_exp=f_exp)[0]
 
 
@@ -49,12 +48,12 @@ def _dt_binning(
         Tuple[List[Dict], str]: Binning result and missing bin position.
     """
     missing_bin = None
-    
+
     # Handle missing values
     mask = ~pd.isna(x)
     x_clean = x[mask].reshape(-1, 1)
     y_clean = y[mask]
-    
+
     if len(x_clean) == 0:
         return [], missing_bin
 
@@ -70,10 +69,10 @@ def _dt_binning(
     # Fit Decision Tree
     # max_leaf_nodes corresponds to max_bins
     clf = DecisionTreeClassifier(
-        criterion='entropy', # entropy minimizes information/maximizes IG, similar to IV
+        criterion="entropy",  # entropy minimizes information/maximizes IG, similar to IV
         max_leaf_nodes=max_bins,
         min_samples_leaf=min_samples_leaf,
-        random_state=42
+        random_state=42,
     )
     clf.fit(x_clean, y_clean)
 
@@ -81,30 +80,32 @@ def _dt_binning(
     # The tree thresholds are the split points.
     thresholds = clf.tree_.threshold[clf.tree_.threshold != -2]
     thresholds = np.sort(np.unique(thresholds))
-    
+
     # Construct bins: [-inf, t1, t2, ..., inf]
     bins = [-np.inf] + list(thresholds) + [np.inf]
-    
+
     # Calculate initial stats
-    bad_rates, _ = _bin_bad_rates(x, y, bins)
-    
+    event_rates, _ = _bin_event_rates(x, y, bins)
+
     # Handle missing values similar to _num_binning
     if len(y[pd.isna(x)]) > 0:
-        na_bad_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
-        
+        na_event_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
+
         # Simple heuristic: compare with first and last bin
-        if len(bad_rates) >= 2:
-            if abs(na_bad_rate - bad_rates[0]["bad_rate"]) < abs(na_bad_rate - bad_rates[-1]["bad_rate"]):
+        if len(event_rates) >= 2:
+            if abs(na_event_rate - event_rates[0]["event_rate"]) < abs(
+                na_event_rate - event_rates[-1]["event_rate"]
+            ):
                 missing_bin = "first"
                 # Adjust first bin to include missing (logic handled by transformer/refit usually via fillna)
                 # But here we just return the bin edges.
                 # However, for WOE calculation for missing, we usually need to know where it goes.
                 # In _num_binning, x is modified to force missing values into the first bin range.
-                # Let's replicate that logic if needed, or rely on bad_rates calculation which handles it.
-                # Actually, _bin_bad_rates ignores NaNs.
+                # Let's replicate that logic if needed, or rely on event_rates calculation which handles it.
+                # Actually, _bin_event_rates ignores NaNs.
                 # We need to calculate stats for missing bin specifically if we want it merged?
                 # The existing logic in _num_binning modifies x_copy.
-                
+
                 # Let's align with _num_binning's logic of "assigning" missing to a bin
                 x_copy = np.copy(x)
                 x_copy[pd.isna(x)] = np.amin(x[~pd.isna(x)]) - 1
@@ -114,27 +115,29 @@ def _dt_binning(
                 x_copy[pd.isna(x)] = np.amax(x[~pd.isna(x)]) + 1
                 bins = bins[:2] + [np.amax(x[~pd.isna(x)]), np.inf]
                 missing_bin = "last"
-            
-            # Recalculate with imputed NaNs
-            bad_rates, _ = _bin_bad_rates(x_copy, y, bins)
-        else:
-             # Fallback if tree didn't find splits
-             missing_bin = "first"
 
-    return bad_rates, missing_bin
+            # Recalculate with imputed NaNs
+            event_rates, _ = _bin_event_rates(x_copy, y, bins)
+        else:
+            # Fallback if tree didn't find splits
+            missing_bin = "first"
+
+    return event_rates, missing_bin
 
 
 def _check_diff_woe(
-    bad_rates: List[Dict], diff_woe_threshold: float
+    event_rates: List[Dict], diff_woe_threshold: float
 ) -> Union[None, int]:
     """Check if the difference in woe is greater than the threshold.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
         diff_woe_threshold (float): Difference in woe threshold.
     Returns:
-        Union[None, int]: Index of the bad rate with the smallest difference in woe."""
+        Union[None, int]: Index of the event rate with the smallest difference in woe."""
 
-    woe_delta: np.ndarray = np.abs(np.diff([bad_rate["woe"] for bad_rate in bad_rates]))
+    woe_delta: np.ndarray = np.abs(
+        np.diff([event_rate["woe"] for event_rate in event_rates])
+    )
     min_diff_woe = min(sorted(list(set(woe_delta))))
     if min_diff_woe < diff_woe_threshold:
         return list(woe_delta).index(min_diff_woe)
@@ -142,63 +145,65 @@ def _check_diff_woe(
         return None
 
 
-def _mono_flags(bad_rates: List[Dict]) -> bool:
-    """Check if the difference in bad rate is monotonic.
+def _mono_flags(event_rates: List[Dict]) -> bool:
+    """Check if the difference in event rate is monotonic.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
     Returns:
-        bool: True if the difference in bad rate is monotonic."""
+        bool: True if the difference in event rate is monotonic."""
 
-    bad_rate_diffs = np.diff([bad_rate["bad_rate"] for bad_rate in bad_rates])
-    positive_mono_diff = np.all(bad_rate_diffs > 0)
-    negative_mono_diff = np.all(bad_rate_diffs < 0)
+    event_rate_diffs = np.diff([event_rate["event_rate"] for event_rate in event_rates])
+    positive_mono_diff = np.all(event_rate_diffs > 0)
+    negative_mono_diff = np.all(event_rate_diffs < 0)
     return True in [positive_mono_diff, negative_mono_diff]
 
 
-def _find_index_of_diff_flag(bad_rates: List[Dict]) -> int:
-    """Find the index of the bad rate with the smallest difference in woe.
+def _find_index_of_diff_flag(event_rates: List[Dict]) -> int:
+    """Find the index of the event rate with the smallest difference in woe.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
     Returns:
-        int: Index of the bad rate with the smallest difference in woe."""
+        int: Index of the event rate with the smallest difference in woe."""
 
-    bad_rate_diffs = np.diff([bad_rate["bad_rate"] for bad_rate in bad_rates])
-    return list(bad_rate_diffs > 0).index(
-        pd.Series(bad_rate_diffs > 0).value_counts().sort_values().index.tolist()[0]
+    event_rate_diffs = np.diff([event_rate["event_rate"] for event_rate in event_rates])
+    return list(event_rate_diffs > 0).index(
+        pd.Series(event_rate_diffs > 0).value_counts().sort_values().index.tolist()[0]
     )
 
 
-def _merge_bins_chi(bad_rates: List[Dict], bins: List, overall_rate: float = None) -> Tuple[List[Dict], List]:
+def _merge_bins_chi(
+    event_rates: List[Dict], bins: List, overall_rate: float = None
+) -> Tuple[List[Dict], List]:
     """Merge the bins with the chi-squared statistic.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
         bins (List): List of bins.
-        overall_rate (Optional[float], optional): Overall bad rate. Defaults to None.
+        overall_rate (Optional[float], optional): Overall event rate. Defaults to None.
     Returns:
-        Tuple[List[Dict], List]: Updated bad rates and bins."""
+        Tuple[List[Dict], List]: Updated event rates and bins."""
 
-    idx = _find_index_of_diff_flag(bad_rates)
+    idx = _find_index_of_diff_flag(event_rates)
     if idx == 0:
         del bins[1]
-    elif idx == len(bad_rates) - 2:
+    elif idx == len(event_rates) - 2:
         del bins[len(bins) - 2]
     else:
         # Just delete a bin - in the real implementation we would use _extract_bin_by_chi2
         del bins[idx + 1]
 
     # Create a simplified result for testing
-    new_bad_rates = bad_rates.copy()
-    if len(new_bad_rates) > 0:
-        new_bad_rates.pop()
+    new_event_rates = event_rates.copy()
+    if len(new_event_rates) > 0:
+        new_event_rates.pop()
 
-    return new_bad_rates, bins
+    return new_event_rates, bins
 
 
 def _extract_bin_by_chi2(bins, idx, x=None, y=None) -> None:
     """Extract the bins with the chi-squared statistic.
     Args:
         bins (List[Dict]): List of bins.
-        idx (int): Index of the bad rate with the smallest difference in woe.
+        idx (int): Index of the event rate with the smallest difference in woe.
         x (pd.DataFrame, optional): Input data. Defaults to None.
         y (np.ndarray, optional): Output data. Defaults to None.
     Returns:
@@ -211,36 +216,36 @@ def _extract_bin_by_chi2(bins, idx, x=None, y=None) -> None:
         del bins[0]  # Just delete something to make the test pass
 
 
-def _merge_bins_iv(bad_rates: List[Dict], bins: List) -> Tuple[List[Dict], List]:
+def _merge_bins_iv(event_rates: List[Dict], bins: List) -> Tuple[List[Dict], List]:
     """Merge the bins with the IV statistic.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
         bins (List): List of bins.
     Returns:
-        Tuple[List[Dict], List]: Updated bad rates and bins."""
+        Tuple[List[Dict], List]: Updated event rates and bins."""
 
-    idx = _find_index_of_diff_flag(bad_rates)
+    idx = _find_index_of_diff_flag(event_rates)
     if idx == 0:
         del bins[1]
-    elif idx == len(bad_rates) - 2:
+    elif idx == len(event_rates) - 2:
         del bins[len(bins) - 2]
     else:
         # Simplified implementation for the test
         del bins[idx + 1]
 
     # Create a simplified result for testing
-    new_bad_rates = bad_rates.copy()
-    if len(new_bad_rates) > 0:
-        new_bad_rates.pop()
+    new_event_rates = event_rates.copy()
+    if len(new_event_rates) > 0:
+        new_event_rates.pop()
 
-    return new_bad_rates, bins
+    return new_event_rates, bins
 
 
 def _extract_bin_by_iv(bins, idx, x=None, y=None) -> None:
     """Extract the bins with the IV statistic.
     Args:
         bins (List[Dict]): List of bins.
-        idx (int): Index of the bad rate with the smallest difference in woe.
+        idx (int): Index of the event rate with the smallest difference in woe.
         x (pd.DataFrame, optional): Input data. Defaults to None.
         y (np.ndarray, optional): Output data. Defaults to None.
     Returns:
@@ -254,34 +259,34 @@ def _extract_bin_by_iv(bins, idx, x=None, y=None) -> None:
 
 
 def _merge_bins_min_pct(
-    bad_rates: List[Dict], bins: List, min_pcnt: float, cat: bool = False
+    event_rates: List[Dict], bins: List, min_pcnt: float, cat: bool = False
 ) -> Tuple[List[Dict], List]:
     """Merge bins with percentage below minimum threshold.
     Args:
-        bad_rates (List[Dict]): List of bad rates.
+        event_rates (List[Dict]): List of event rates.
         bins (List): List of bins.
         min_pcnt (float): Minimum percentage threshold.
         cat (bool, optional): If True, treat as categorical bins. Defaults to False.
     Returns:
-        Tuple[List[Dict], List]: Updated bad rates and bins."""
+        Tuple[List[Dict], List]: Updated event rates and bins."""
 
     # Find the bin with minimum percentage
-    percentages = [bad_rate["pct"] for bad_rate in bad_rates]
+    percentages = [event_rate["pct"] for event_rate in event_rates]
     min_pct = min(percentages)
     idx = percentages.index(min_pct)
 
     # If the bin meets the minimum percentage requirement, no need to merge
     if min_pct >= min_pcnt:
-        return bad_rates, bins
+        return event_rates, bins
 
     # For categorical bins, merge differently
     if cat:
         # Remove the bin with smallest percentage
         if idx < len(bins) - 1:
-            bins[idx+1].extend(bins[idx])
+            bins[idx + 1].extend(bins[idx])
             del bins[idx]
         else:
-            bins[idx-1].extend(bins[idx])
+            bins[idx - 1].extend(bins[idx])
             del bins[idx]
     else:
         # For numeric bins, just remove the boundary
@@ -290,22 +295,22 @@ def _merge_bins_min_pct(
         else:
             del bins[0]  # Edge case handling
 
-    # Create updated bad_rates list with bins above the threshold
-    new_bad_rates = [br for br in bad_rates if br["pct"] >= min_pcnt]
+    # Create updated event_rates list with bins above the threshold
+    new_event_rates = [er for er in event_rates if er["pct"] >= min_pcnt]
 
     # Ensure at least one bin remains
-    if not new_bad_rates and bad_rates:
-        new_bad_rates = [bad_rates[0]]
+    if not new_event_rates and event_rates:
+        new_event_rates = [event_rates[0]]
 
-    return new_bad_rates, bins
+    return new_event_rates, bins
 
 
 def _calc_stats(
     x,
     y: np.ndarray,
     idx,
-    all_bad,
-    all_good: int,
+    all_event,
+    all_not_event: int,
     bins: List,
     cat: bool = False,
     refit_fl: bool = False,
@@ -314,9 +319,9 @@ def _calc_stats(
     Args:
         x (pd.DataFrame): Input data.
         y (np.ndarray): Output data.
-        idx (int): Index of the bad rate with the smallest difference in woe.
-        all_bad (int): Total number of bad rates.
-        all_good (int): Total number of good rates.
+        idx (int): Index of the event rate with the smallest difference in woe.
+        all_event (int): Total number of event rates.
+        all_not_event (int): Total number of not_event rates.
         bins (List): List of bins.
         cat (bool, optional): If True, the bins are merged into a categorical bin. Defaults to False.
         refit_fl (bool, optional): If True, the bins are merged into a categorical bin. Defaults to False.
@@ -339,7 +344,11 @@ def _calc_stats(
             mask = x_not_na == value
     else:
         # For numerical data
-        if isinstance(value, list) and len(value) == 2 and all(isinstance(v, (int, float, np.number)) for v in value):
+        if (
+            isinstance(value, list)
+            and len(value) == 2
+            and all(isinstance(v, (int, float, np.number)) for v in value)
+        ):
             min_val = min(value)
             max_val = max(value)
             mask = (x_not_na >= min_val) & (x_not_na < max_val)
@@ -352,36 +361,36 @@ def _calc_stats(
     total = len(x_in)
 
     # Calculate statistics
-    bad = y_not_na[mask].sum()
+    event = y_not_na[mask].sum()
     pct = np.sum(mask) / len(x)
-    bad_rate = bad / total if total != 0 else 0
-    good = total - bad
+    event_rate = event / total if total != 0 else 0
+    not_event = total - event
 
     # Calculate Weight of Evidence with Laplace smoothing for zero counts
     woe = (
-        np.log((good / all_good) / (bad / all_bad))
-        if good != 0 and bad != 0
-        else np.log(((good + 0.5) / all_good) / ((bad + 0.5) / all_bad))
+        np.log((not_event / all_not_event) / (event / all_event))
+        if not_event != 0 and event != 0
+        else np.log(((not_event + 0.5) / all_not_event) / ((event + 0.5) / all_event))
     )
 
     # Calculate Information Value
-    iv = ((good / all_good) - (bad / all_bad)) * woe
+    iv = ((not_event / all_not_event) - (event / all_event)) * woe
 
     return {
         "bin": value,
         "total": total,
-        "bad": bad,
+        "event": event,
         "pct": pct,
-        "bad_rate": bad_rate,
+        "event_rate": event_rate,
         "woe": woe,
         "iv": iv,
     }
 
 
-def _bin_bad_rates(
+def _bin_event_rates(
     x: np.ndarray, y: np.ndarray, bins: List, cat: bool = False, refit_fl: bool = False
 ) -> Tuple[List[Dict], np.ndarray]:
-    """Bin the bad rates.
+    """Bin the event rates.
     Args:
         x (pd.DataFrame): Input data.
         y (np.ndarray): Output data.
@@ -389,11 +398,11 @@ def _bin_bad_rates(
         cat (bool, optional): If True, the bins are merged into a categorical bin. Defaults to False.
         refit_fl (bool, optional): If True, the bins are merged into a categorical bin. Defaults to False.
     Returns:
-        Tuple[List[Dict], np.ndarray]: List of bad rates and overall rate."""
+        Tuple[List[Dict], np.ndarray]: List of event rates and overall rate."""
 
     # Calculate total events and non-events
-    all_bad = y.sum()
-    all_good = len(y) - all_bad
+    all_event = y.sum()
+    all_not_event = len(y) - all_event
 
     # Mask for non-missing values
     mask = ~pd.isna(x)
@@ -410,7 +419,7 @@ def _bin_bad_rates(
         for idx, bin_vals in enumerate(bins):
             for val in bin_vals:
                 val_to_idx[val] = idx
-        
+
         # Map values to indices. Using pd.Series.map handles various types well.
         # Fill unmapped values with -1
         bin_indices = pd.Series(x_clean).map(val_to_idx).fillna(-1).values.astype(int)
@@ -422,82 +431,86 @@ def _bin_bad_rates(
         # Assuming intervals are contiguous and sorted: [[e0, e1], [e1, e2], ...]
         # We can reconstruct edges: [e0, e1, e2, ...]
         edges = [b[0] for b in bins] + [bins[-1][1]]
-        
+
         # Use searchsorted. side='right' with subtraction gives: edges[i] <= x < edges[i+1]
-        bin_indices = np.searchsorted(edges, x_clean, side='right') - 1
+        bin_indices = np.searchsorted(edges, x_clean, side="right") - 1
         n_bins = len(bins)
-        
+
         # Clip indices to be safe (handle potential out of bound due to float precision or new ranges)
         # Values < min_edge will be -1, Values >= max_edge will be n_bins
         # We generally expect data to cover -inf to inf if bins are complete, but in refit they might not be?
         # Usually WOE bins cover -inf to inf.
-    
+
     else:
         # Numeric Training: bins is list of edges [e0, e1, e2, ...]
         edges = bins
-        bin_indices = np.searchsorted(edges, x_clean, side='right') - 1
+        bin_indices = np.searchsorted(edges, x_clean, side="right") - 1
         n_bins = len(bins) - 1
 
     # Filter out samples that didn't fall into any bin (index -1 or >= n_bins)
     valid_mask = (bin_indices >= 0) & (bin_indices < n_bins)
-    
+
     # It's possible some values fall outside bins (e.g. during refit if data range changes drastically and bins aren't -inf/inf)
     # But usually bins start with NINF and end with INF.
-    
+
     final_indices = bin_indices[valid_mask]
     final_y = y_clean[valid_mask]
 
     # Calculate counts using bincount (extremely fast)
     # minlength ensures we get counts for all bins including empty ones
     bin_total = np.bincount(final_indices, minlength=n_bins)
-    bin_bad = np.bincount(final_indices, weights=final_y, minlength=n_bins)
-    
+    bin_event = np.bincount(final_indices, weights=final_y, minlength=n_bins)
+
     # Construct results
-    bad_rates = []
-    
+    event_rates = []
+
     for i in range(n_bins):
         total = int(bin_total[i])
-        bad = int(bin_bad[i])
-        good = total - bad
+        event = int(bin_event[i])
+        not_event = total - event
         pct = total / len(x) if len(x) > 0 else 0
-        bad_rate = bad / total if total != 0 else 0
+        event_rate = event / total if total != 0 else 0
 
         # WOE calculation with smoothing
-        if good == 0 or bad == 0:
-            woe = np.log(((good + 0.5) / all_good) / ((bad + 0.5) / all_bad))
+        if not_event == 0 or event == 0:
+            woe = np.log(
+                ((not_event + 0.5) / all_not_event) / ((event + 0.5) / all_event)
+            )
         else:
-            woe = np.log((good / all_good) / (bad / all_bad))
+            woe = np.log((not_event / all_not_event) / (event / all_event))
 
-        iv = ((good / all_good) - (bad / all_bad)) * woe
+        iv = ((not_event / all_not_event) - (event / all_event)) * woe
 
         # Determine bin value representation
         if cat or refit_fl:
             bin_val = bins[i]
         else:
-            bin_val = [bins[i], bins[i+1]]
+            bin_val = [bins[i], bins[i + 1]]
 
-        bad_rates.append({
-            "bin": bin_val,
-            "total": total,
-            "bad": bad,
-            "pct": pct,
-            "bad_rate": bad_rate,
-            "woe": woe,
-            "iv": iv,
-        })
+        event_rates.append(
+            {
+                "bin": bin_val,
+                "total": total,
+                "event": event,
+                "pct": pct,
+                "event_rate": event_rate,
+                "woe": woe,
+                "iv": iv,
+            }
+        )
 
     # Sort if categorical
     if cat:
-        bad_rates.sort(key=lambda _x: _x["bad_rate"])
+        event_rates.sort(key=lambda _x: _x["event_rate"])
 
     # Calculate overall rate
     overall_rate = None
     if not cat:
-        total_sum = sum(b["total"] for b in bad_rates)
-        bad_sum = sum(b["bad"] for b in bad_rates)
-        overall_rate = bad_sum / total_sum if total_sum > 0 else 0
+        total_sum = sum(b["total"] for b in event_rates)
+        event_sum = sum(b["event"] for b in event_rates)
+        overall_rate = event_sum / total_sum if total_sum > 0 else 0
 
-    return bad_rates, overall_rate
+    return event_rates, overall_rate
 
 
 def _calc_max_bins(bins_count, max_bins: float) -> int:
@@ -598,36 +611,42 @@ def _cat_binning(
 
     # Group bins if we have too many
     if len(bins) > max_bins:
-        # Calculate bad rate for each bin
-        bad_rates_dict = {}
+        # Calculate event rate for each bin
+        event_rates_dict = {}
         for i, bin_val in enumerate(bins):
             mask = np.isin(x, bin_val)
             if mask.any():
                 bin_y = y[mask]
-                bad_rates_dict[bin_val[0]] = bin_y.sum() / len(bin_y) if len(bin_y) > 0 else 0
+                event_rates_dict[bin_val[0]] = (
+                    bin_y.sum() / len(bin_y) if len(bin_y) > 0 else 0
+                )
 
-        # Sort by bad rate
-        bad_rates_dict = dict(sorted(bad_rates_dict.items(), key=lambda item: item[1]))
-        bad_rate_list = list(bad_rates_dict.values())
+        # Sort by event rate
+        event_rates_dict = dict(
+            sorted(event_rates_dict.items(), key=lambda item: item[1])
+        )
+        event_rate_list = list(event_rates_dict.values())
 
         # Create quantile cuts
         q_list = [0.0]
         q_list.extend(
-            np.nanquantile(np.array(bad_rate_list), quantile / max_bins, axis=0)
-            for quantile in range(1, max_bins)
+            np.nanquantile(np.array(event_rate_list), quantile / max_bins, axis=0)
+            for quantile in range(1, int(max_bins))
         )
         q_list.append(1)
         q_list = list(sorted(set(q_list)))
 
         # Group bins by quantiles
-        bin_keys = list(bad_rates_dict.keys())
+        bin_keys = list(event_rates_dict.keys())
         new_bins = [[bin_keys[0]]]
         start = 1
         for i in range(len(q_list) - 1):
             for n in range(start, len(bin_keys)):
-                if bad_rate_list[n] >= q_list[i + 1]:
+                if event_rate_list[n] >= q_list[i + 1]:
                     break
-                elif (bad_rate_list[n] >= q_list[i]) & (bad_rate_list[n] < q_list[i + 1]):
+                elif (event_rate_list[n] >= q_list[i]) & (
+                    event_rate_list[n] < q_list[i + 1]
+                ):
                     try:
                         new_bins[i].append(bin_keys[n])
                         start += 1
@@ -636,10 +655,10 @@ def _cat_binning(
                         new_bins[i].append(bin_keys[n])
                         start += 1
 
-        bad_rates, _ = _bin_bad_rates(x, y, new_bins, cat=True)
-        bins = [bad_rate["bin"] for bad_rate in bad_rates]
+        event_rates, _ = _bin_event_rates(x, y, new_bins, cat=True)
+        bins = [event_rate["bin"] for event_rate in event_rates]
     else:
-        bad_rates, _ = _bin_bad_rates(x, y, bins, cat=True)
+        event_rates, _ = _bin_event_rates(x, y, bins, cat=True)
 
     # Handle missing values
     if len(y[pd.isna(x)]) > 0:
@@ -650,14 +669,18 @@ def _cat_binning(
             bins[1].append(missing_value)
             x_copy = x.copy()
             x_copy[pd.isna(x)] = missing_value
-            bad_rates, _ = _bin_bad_rates(x_copy, y, bins, cat=True)
-            missing_bin = "first" if bad_rates[0]["bin"][0] in ["Missing", -1] else "last"
+            event_rates, _ = _bin_event_rates(x_copy, y, bins, cat=True)
+            missing_bin = (
+                "first" if event_rates[0]["bin"][0] in ["Missing", -1] else "last"
+            )
         else:
-            # Assign missing values to either first or last bin based on bad rate similarity
-            na_bad_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
+            # Assign missing values to either first or last bin based on event rate similarity
+            na_event_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
 
-            # Compare with first and last bin bad rates
-            if abs(na_bad_rate - bad_rates[0]["bad_rate"]) < abs(na_bad_rate - bad_rates[-1]["bad_rate"]):
+            # Compare with first and last bin event rates
+            if abs(na_event_rate - event_rates[0]["event_rate"]) < abs(
+                na_event_rate - event_rates[-1]["event_rate"]
+            ):
                 missing_bin = "first"
                 bin_idx = 0
             else:
@@ -666,42 +689,51 @@ def _cat_binning(
 
             # Add missing value identifier to the appropriate bin
             missing_value = "Missing" if data_type == "object" else -1
-            bad_rates[bin_idx]["bin"].append(missing_value)
+            event_rates[bin_idx]["bin"].append(missing_value)
 
             # Update x with the missing value assignment
             x_copy = x.copy()
             x_copy[pd.isna(x)] = missing_value
 
-            # Recalculate bad rates with the updated assignments
-            bad_rates, _ = _bin_bad_rates(x_copy, y, bins, cat=True)
-            bins = [bad_rate["bin"] for bad_rate in bad_rates]
+            # Recalculate event rates with the updated assignments
+            event_rates, _ = _bin_event_rates(x_copy, y, bins, cat=True)
+            bins = [event_rate["bin"] for event_rate in event_rates]
 
     # Early return if we have 2 or fewer bins
     if len(bins) <= 2:
-        return bad_rates, missing_bin
+        return event_rates, missing_bin
 
     # Merge bins with similar WOE values
-    while (_check_diff_woe(bad_rates, diff_woe_threshold) is not None) and (len(bad_rates) > 2):
-        idx = _check_diff_woe(bad_rates, diff_woe_threshold)
+    while (_check_diff_woe(event_rates, diff_woe_threshold) is not None) and (
+        len(event_rates) > 2
+    ):
+        idx = _check_diff_woe(event_rates, diff_woe_threshold)
         bins[idx + 1] += bins[idx]
         del bins[idx]
-        bad_rates, _ = _bin_bad_rates(x, y, bins, cat=True)
-        bins = [bad_rate["bin"] for bad_rate in bad_rates]
+        event_rates, _ = _bin_event_rates(x, y, bins, cat=True)
+        bins = [event_rate["bin"] for event_rate in event_rates]
 
     if len(bins) <= 2:
-        return bad_rates, missing_bin
+        return event_rates, missing_bin
 
     # Merge bins with percentage below minimum threshold
-    while (min(bad_rate["pct"] for bad_rate in bad_rates) <= min_pct_group and len(bins) > 2):
-        bad_rates, bins = _merge_bins_min_pct(bad_rates, bins, min_pct_group, cat=True)
-        bins = [bad_rate["bin"] for bad_rate in bad_rates]
+    while (
+        min(event_rate["pct"] for event_rate in event_rates) <= min_pct_group
+        and len(bins) > 2
+    ):
+        event_rates, bins = _merge_bins_min_pct(
+            event_rates, bins, min_pct_group, cat=True
+        )
+        bins = [event_rate["bin"] for event_rate in event_rates]
 
     # Reduce to max_bins if needed
-    while len(bad_rates) > max_bins and len(bins) > 2:
-        bad_rates, bins = _merge_bins_min_pct(bad_rates, bins, min_pct_group, cat=True)
-        bins = [bad_rate["bin"] for bad_rate in bad_rates]
+    while len(event_rates) > max_bins and len(bins) > 2:
+        event_rates, bins = _merge_bins_min_pct(
+            event_rates, bins, min_pct_group, cat=True
+        )
+        bins = [event_rate["bin"] for event_rate in event_rates]
 
-    return bad_rates, missing_bin
+    return event_rates, missing_bin
 
 
 def cat_processing(
@@ -769,7 +801,7 @@ def _num_binning(
 
     if len(unique_values) > max_bins:
         # Add quantile-based bin edges
-        for quantile in range(1, max_bins):
+        for quantile in range(1, int(max_bins)):
             bins.append(np.nanquantile(x, quantile / max_bins, axis=0))
 
         # Ensure unique bin edges
@@ -786,20 +818,20 @@ def _num_binning(
     bins.append(np.inf)
 
     # Calculate initial bin statistics
-    bad_rates, _ = _bin_bad_rates(x, y, bins)
+    event_rates, _ = _bin_event_rates(x, y, bins)
 
     # Handle edge case where the first bin has no data
-    if pd.isna(bad_rates[0]["bad_rate"]) and len(bad_rates) > 2:
+    if pd.isna(event_rates[0]["event_rate"]) and len(event_rates) > 2:
         del bins[1]
-        bad_rates, _ = _bin_bad_rates(x, y, bins)
+        event_rates, _ = _bin_event_rates(x, y, bins)
 
     # Handle missing values
     if len(y[pd.isna(x)]) > 0:
-        na_bad_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
+        na_event_rate = y[pd.isna(x)].sum() / len(y[pd.isna(x)])
 
         # Special case for when we only have two bins
-        if len(bad_rates) == 2:
-            if na_bad_rate < bad_rates[1]["bad_rate"]:
+        if len(event_rates) == 2:
+            if na_event_rate < event_rates[1]["event_rate"]:
                 x_copy = np.copy(x)
                 x_copy[pd.isna(x)] = np.amin(x[~pd.isna(x)]) - 1
                 bins = [-np.inf, np.amin(x[~pd.isna(x)])] + bins[1:]
@@ -810,40 +842,54 @@ def _num_binning(
                 bins = bins[:2] + [np.amax(x[~pd.isna(x)]), np.inf]
                 missing_bin = "last"
         else:
-            # Compare NA bad rate with average bad rate of first and second half of bins
-            first_half_mean = np.mean([bad_rate["bad_rate"] for bad_rate in bad_rates[:len(bad_rates) // 2]])
-            second_half_mean = np.mean([bad_rate["bad_rate"] for bad_rate in bad_rates[len(bad_rates) // 2:]])
+            # Compare NA event rate with average event rate of first and second half of bins
+            first_half_mean = np.mean(
+                [
+                    event_rate["event_rate"]
+                    for event_rate in event_rates[: len(event_rates) // 2]
+                ]
+            )
+            second_half_mean = np.mean(
+                [
+                    event_rate["event_rate"]
+                    for event_rate in event_rates[len(event_rates) // 2 :]
+                ]
+            )
 
             x_copy = np.copy(x)
-            if abs(na_bad_rate - first_half_mean) < abs(na_bad_rate - second_half_mean):
+            if abs(na_event_rate - first_half_mean) < abs(
+                na_event_rate - second_half_mean
+            ):
                 x_copy[pd.isna(x)] = np.amin(x[~pd.isna(x)])
                 missing_bin = "first"
             else:
                 x_copy[pd.isna(x)] = np.amax(x[~pd.isna(x)])
                 missing_bin = "last"
 
-        bad_rates, _ = _bin_bad_rates(x_copy, y, bins)
+        event_rates, _ = _bin_event_rates(x_copy, y, bins)
 
-    if len(bad_rates) <= 2:
-        return bad_rates, missing_bin
+    if len(event_rates) <= 2:
+        return event_rates, missing_bin
 
     # Merge bins with percentage below minimum threshold
     while (
-        min(bad_rate["pct"] for bad_rate in bad_rates) <= min_pct_group
-        and len(bad_rates) > 2
+        min(event_rate["pct"] for event_rate in event_rates) <= min_pct_group
+        and len(event_rates) > 2
     ):
-        bad_rates, bins = _merge_bins_min_pct(bad_rates, bins, min_pct_group)
+        event_rates, bins = _merge_bins_min_pct(event_rates, bins, min_pct_group)
 
-    if len(bad_rates) <= 2:
-        return bad_rates, missing_bin
+    if len(event_rates) <= 2:
+        return event_rates, missing_bin
 
     # Merge bins with similar WOE values
-    while (_check_diff_woe(bad_rates, diff_woe_threshold) is not None) and (len(bad_rates) > 2):
-        idx = _check_diff_woe(bad_rates, diff_woe_threshold) + 1
+    while (_check_diff_woe(event_rates, diff_woe_threshold) is not None) and (
+        len(event_rates) > 2
+    ):
+        idx = _check_diff_woe(event_rates, diff_woe_threshold) + 1
         del bins[idx]
-        bad_rates, overall_rate = _bin_bad_rates(x, y, bins)
+        event_rates, overall_rate = _bin_event_rates(x, y, bins)
 
-    return bad_rates, missing_bin
+    return event_rates, missing_bin
 
 
 def num_processing(
@@ -921,26 +967,26 @@ def _refit_woe_dict(
                 else:
                     fill_val = -1
             else:
-                 # Numerical. bins[0] is [min, cut].
-                 fill_val = bins[0][0]
+                # Numerical. bins[0] is [min, cut].
+                fill_val = bins[0][0]
         elif missing_bin == "last":
             if cat:
                 if isinstance(bins[-1], list) and len(bins[-1]) > 0:
-                     fill_val = bins[-1][0]
+                    fill_val = bins[-1][0]
                 else:
-                     fill_val = -1
+                    fill_val = -1
             else:
                 fill_val = bins[-1][0]
         else:
             # Default fallback
             fill_val = bins[0][0] if isinstance(bins[0], list) else bins[0]
-        
+
         # If we found a valid fill value, apply it
         if fill_val is not None:
-             x_copy[pd.isna(x)] = fill_val
+            x_copy[pd.isna(x)] = fill_val
 
-    bad_rates, _ = _bin_bad_rates(x_copy, y, bins, cat=cat, refit_fl=True)
-    return bad_rates
+    event_rates, _ = _bin_event_rates(x_copy, y, bins, cat=cat, refit_fl=True)
+    return event_rates
 
 
 def refit(x, y: np.ndarray, bins: List, type_feature: str, missing_bin: str) -> Dict:

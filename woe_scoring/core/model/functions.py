@@ -13,14 +13,14 @@ from .model import Model
 
 
 def calculate_gini_score(
-        data: Union[pd.DataFrame, np.ndarray],
-        target: Union[pd.Series, np.ndarray],
-        feature: str,
-        random_state: int,
-        class_weight: str,
-        cv: int,
-        scoring: str,
-        n_jobs: int
+    data: Union[pd.DataFrame, np.ndarray],
+    target: Union[pd.Series, np.ndarray],
+    feature: str,
+    random_state: int,
+    class_weight: str,
+    cv: int,
+    scoring: str,
+    n_jobs: int,
 ) -> float:
     """
     Calculate the Gini score for a given feature using Logistic Regression.
@@ -48,7 +48,7 @@ def calculate_gini_score(
         max_iter=1000,
         n_jobs=1,  # Use 1 for the inner job to avoid nested parallelism
         warm_start=True,
-        solver='liblinear'  # Faster for small datasets/single feature
+        solver="liblinear",  # Faster for small datasets/single feature
     )
 
     # Calculate cross-validation scores
@@ -64,14 +64,14 @@ def calculate_gini_score(
 
 
 def calc_features_gini_quality(
-        data: Union[pd.DataFrame, np.ndarray],
-        target: Union[pd.Series, np.ndarray],
-        feature_names: List[str],
-        random_state: int,
-        class_weight: str,
-        cv: int,
-        scoring: str,
-        n_jobs: int,
+    data: Union[pd.DataFrame, np.ndarray],
+    target: Union[pd.Series, np.ndarray],
+    feature_names: List[str],
+    random_state: int,
+    class_weight: str,
+    cv: int,
+    scoring: str,
+    n_jobs: int,
 ) -> Dict[str, float]:
     """
     Calculates the Gini quality of given features in data with respect to the target variable.
@@ -90,7 +90,7 @@ def calc_features_gini_quality(
         Dict: A dictionary containing the calculated Gini quality of each feature.
     """
     # Ensure target is numpy array for consistency
-    target_array = target.values if hasattr(target, 'values') else np.array(target)
+    target_array = target.values if hasattr(target, "values") else np.array(target)
 
     # Use parallel processing for faster computation
     results = Parallel(n_jobs=n_jobs)(
@@ -111,9 +111,9 @@ def calc_features_gini_quality(
 
 
 def check_features_gini_threshold(
-        feature_names: List[str],
-        features_gini_scores: Dict[str, float],
-        gini_threshold: float,
+    feature_names: List[str],
+    features_gini_scores: Dict[str, float],
+    gini_threshold: float,
 ) -> List[str]:
     """
     Check for the feature names whose Gini impurity is greater than or equal to a given threshold.
@@ -127,14 +127,18 @@ def check_features_gini_threshold(
     :return: A filtered list of feature names whose Gini impurity is greater than or equal to the threshold.
     :rtype: List[str]
     """
-    return [feature_name for feature_name in feature_names if features_gini_scores[feature_name] >= gini_threshold]
+    return [
+        feature_name
+        for feature_name in feature_names
+        if features_gini_scores[feature_name] >= gini_threshold
+    ]
 
 
 def check_correlation_threshold(
-        data: Union[pd.DataFrame, np.ndarray],
-        feature_names: List[str],
-        features_gini_scores: Dict[str, float],
-        corr_threshold: float
+    data: Union[pd.DataFrame, np.ndarray],
+    feature_names: List[str],
+    features_gini_scores: Dict[str, float],
+    corr_threshold: float,
 ) -> List[str]:
     """
     Check correlation matrix for features in given data, and return only uncorrelated
@@ -163,7 +167,9 @@ def check_correlation_threshold(
     uncorrelated_features = set(feature_names)
 
     # Pre-sort features by Gini score (higher score first)
-    sorted_features = sorted(feature_names, key=lambda x: features_gini_scores.get(x, 0), reverse=True)
+    sorted_features = sorted(
+        feature_names, key=lambda x: features_gini_scores.get(x, 0), reverse=True
+    )
 
     # For each feature (in order of decreasing importance)
     for i, feature_a in enumerate(sorted_features):
@@ -172,7 +178,7 @@ def check_correlation_threshold(
             continue
 
         # Compare with remaining features
-        for feature_b in sorted_features[i+1:]:
+        for feature_b in sorted_features[i + 1 :]:
             if feature_b not in uncorrelated_features:
                 continue
 
@@ -184,9 +190,9 @@ def check_correlation_threshold(
 
 
 def check_min_pct_group(
-        data: Union[pd.DataFrame, np.ndarray],
-        feature_names: List[str],
-        min_pct_group: float,
+    data: Union[pd.DataFrame, np.ndarray],
+    feature_names: List[str],
+    min_pct_group: float,
 ) -> List[str]:
     """
     Check if a feature has a minimum percentage of values below a threshold.
@@ -239,12 +245,12 @@ def find_bad_features(model: Model) -> List[str]:
 
 
 def calc_iv_dict(data: pd.DataFrame, target: np.ndarray, feature: str) -> Dict:
-    """Calculate the information value (IV) of a categorical feature.
+    """Calculate the information value (IV) of a feature.
 
     Args:
         data: A pandas DataFrame containing the feature and target columns.
         target: A numpy array of binary labels (0 for good, 1 for bad).
-        feature: A string with the name of the categorical feature.
+        feature: A string with the name of the feature.
 
     Returns:
         A dictionary with the feature name as key and the IV as value.
@@ -252,39 +258,49 @@ def calc_iv_dict(data: pd.DataFrame, target: np.ndarray, feature: str) -> Dict:
 
     values = data[feature].values
     unique_values, value_counts = np.unique(values, return_counts=True)
-    bad = np.zeros_like(unique_values)
-    good = np.zeros_like(unique_values)
+    event = np.zeros(len(unique_values), dtype=np.float64)
+    not_event = np.zeros(len(unique_values), dtype=np.float64)
     for i, value in enumerate(unique_values):
-        bad[i] = target[values == value].sum()
-        good[i] = value_counts[i] - bad[i]
-    all_bad = target.sum()
-    all_good = len(target) - all_bad
-    iv = ((good / all_good) - (bad / all_bad)) * unique_values
-    return {feature: iv.sum()}
+        event[i] = target[values == value].sum()
+        not_event[i] = value_counts[i] - event[i]
+    all_event = max(target.sum(), 1)  # Avoid division by zero
+    all_not_event = max(len(target) - all_event, 1)  # Avoid division by zero
+
+    # Calculate distribution percentages
+    pct_not_event = not_event / all_not_event
+    pct_event = event / all_event
+
+    # Apply smoothing to avoid log(0) and division by zero
+    pct_not_event = np.where(pct_not_event == 0, 1e-10, pct_not_event)
+    pct_event = np.where(pct_event == 0, 1e-10, pct_event)
+
+    # Calculate WOE: ln(% Not Event / % Event)
+    woe = np.log(pct_not_event / pct_event)
+
+    # Calculate IV: Σ (% Not Event - % Event) × WOE
+    iv = ((pct_not_event - pct_event) * woe).sum()
+
+    return {feature: iv}
 
 
-def save_reports(
-        model,
-        path: str = os.getcwd()
-) -> None:
+def save_reports(model, path: str = os.getcwd()) -> None:
     """Save model reports.
     Args:
         model: Model (statsmodels Logit or similar with summary/wald_test_terms methods).
         path: Path to save reports."""
 
-    with open(
-            os.path.join(path, "model_summary.txt"), "w"
-    ) as outfile:
+    with open(os.path.join(path, "model_summary.txt"), "w") as outfile:
         outfile.write(model.summary().as_text())
 
-    with open(
-            os.path.join(path, "model_wald.txt"), "w"
-    ) as outfile:
+    with open(os.path.join(path, "model_wald.txt"), "w") as outfile:
         model.wald_test_terms().summary_frame().to_string(outfile)
 
 
 def generate_sql(
-        encoder, feature_names: List[str], coef: List[float], intercept: float,
+    encoder,
+    feature_names: List[str],
+    coef: List[float],
+    intercept: float,
 ) -> str:
     """
     Generate SQL query for model deployment based on fitted model.
@@ -329,17 +345,22 @@ def generate_sql(
         if woe_dict_entry["type_feature"] == "cat":
             # Categorical feature binning
             for bin_info in woe_dict_entry[base_var]:
-                bin_str = str(bin_info["bin"]).replace("[", "(").replace("]", ")") \
-                                             .replace(", -1", "").replace(", Missing", "")
+                bin_str = (
+                    str(bin_info["bin"])
+                    .replace("[", "(")
+                    .replace("]", ")")
+                    .replace(", -1", "")
+                    .replace(", Missing", "")
+                )
                 sql.append(f" WHEN {base_var} in {bin_str} THEN {bin_info['woe']}")
 
             # Handle missing values
             if woe_dict_entry["missing_bin"] == "first":
-                first_bin_woe = woe_dict_entry[base_var][0]['woe']
+                first_bin_woe = woe_dict_entry[base_var][0]["woe"]
                 sql.append(f" WHEN {base_var} IS NULL THEN {first_bin_woe}")
                 sql.append(f" ELSE {first_bin_woe}")
             elif woe_dict_entry["missing_bin"] == "last":
-                last_bin_woe = woe_dict_entry[base_var][-1]['woe']
+                last_bin_woe = woe_dict_entry[base_var][-1]["woe"]
                 sql.append(f" WHEN {base_var} IS NULL THEN {last_bin_woe}")
                 sql.append(f" ELSE {last_bin_woe}")
         else:
@@ -347,16 +368,24 @@ def generate_sql(
 
             # Handle NULL values first
             if woe_dict_entry["missing_bin"] == "first":
-                sql.append(f" WHEN {base_var} IS NULL THEN {woe_dict_entry[base_var][0]['woe']}")
+                sql.append(
+                    f" WHEN {base_var} IS NULL THEN {woe_dict_entry[base_var][0]['woe']}"
+                )
             elif woe_dict_entry["missing_bin"] == "last":
-                sql.append(f" WHEN {base_var} IS NULL THEN {woe_dict_entry[base_var][-1]['woe']}")
+                sql.append(
+                    f" WHEN {base_var} IS NULL THEN {woe_dict_entry[base_var][-1]['woe']}"
+                )
 
             # Handle numeric bins
             for n, bin_info in enumerate(woe_dict_entry[base_var]):
                 if n == 0:
-                    sql.append(f" WHEN {base_var} < {bin_info['bin'][1]} THEN {bin_info['woe']}")
+                    sql.append(
+                        f" WHEN {base_var} < {bin_info['bin'][1]} THEN {bin_info['woe']}"
+                    )
                 elif n == len(woe_dict_entry[base_var]) - 1:
-                    sql.append(f" WHEN {base_var} >= {bin_info['bin'][0]} THEN {bin_info['woe']}")
+                    sql.append(
+                        f" WHEN {base_var} >= {bin_info['bin'][0]} THEN {bin_info['woe']}"
+                    )
                 else:
                     sql.append(
                         f" WHEN {base_var} >= {bin_info['bin'][0]} AND {base_var} < {bin_info['bin'][1]} "
@@ -367,28 +396,23 @@ def generate_sql(
         sql.append(f" END AS {var}")
 
     # Add model formula
-    sql.extend([
-        " FROM )",
-        ", b as (",
-        "SELECT a.*",
-        f", REPLACE(1 / (1 + EXP(-({intercept}"
-    ])
+    sql.extend(
+        [" FROM )", ", b as (", "SELECT a.*", f", REPLACE(1 / (1 + EXP(-({intercept}"]
+    )
 
     # Add feature coefficients
     for idx, feature in enumerate(feature_names):
         sql.append(f" + ({coef[idx]} * a.{feature})")
 
     # Finish query
-    sql.extend([
-        "))), ',', '.') as PD",
-        " FROM a) ",
-        "SELECT * FROM b"
-    ])
+    sql.extend(["))), ',', '.') as PD", " FROM a) ", "SELECT * FROM b"])
 
     return "".join(sql)
 
 
-def _calc_score_points(woe, coef, intercept, factor, offset: float, n_features: int) -> int:
+def _calc_score_points(
+    woe, coef, intercept, factor, offset: float, n_features: int
+) -> int:
     """Calculate score points.
     Args:
         woe: WOE.
@@ -404,13 +428,13 @@ def _calc_score_points(woe, coef, intercept, factor, offset: float, n_features: 
 
 
 def _calc_stats_for_feature(
-        idx,
-        feature,
-        feature_names: List[str],
-        encoder,
-        model_results,
-        factor: float,
-        offset: float,
+    idx,
+    feature,
+    feature_names: List[str],
+    encoder,
+    model_results,
+    factor: float,
+    offset: float,
 ) -> pd.DataFrame:
     """Calculate stats for feature.
     Args:
@@ -434,7 +458,7 @@ def _calc_stats_for_feature(
         "percent_of_population": [],
         "total": [],
         "event_cnt": [],
-        "non_event_cnt": [],
+        "not_event_cnt": [],
         "event_rate": [],
         "score_ball": [],
     }
@@ -464,9 +488,11 @@ def _calc_stats_for_feature(
                     result_dict["IV"].append(bin_info["iv"])
                     result_dict["percent_of_population"].append(bin_info["pct"])
                     result_dict["total"].append(bin_info["total"])
-                    result_dict["event_cnt"].append(bin_info["bad"])
-                    result_dict["non_event_cnt"].append(bin_info["good"])
-                    result_dict["event_rate"].append(bin_info["bad_rate"])
+                    result_dict["event_cnt"].append(bin_info["event"])
+                    result_dict["not_event_cnt"].append(
+                        bin_info.get("not_event", bin_info["total"] - bin_info["event"])
+                    )
+                    result_dict["event_rate"].append(bin_info["event_rate"])
                     result_dict["score_ball"].append(
                         _calc_score_points(
                             woe=result_dict["WOE"][-1],
@@ -503,11 +529,11 @@ def _update_result_dict(result_dict, feature, model_results, idx) -> None:
 
 
 def _calc_stats(
-        feature_names: List[str],
-        encoder,
-        model_results,
-        factor: float,
-        offset: float,
+    feature_names: List[str],
+    encoder,
+    model_results,
+    factor: float,
+    offset: float,
 ) -> List[pd.DataFrame]:
     """Calculate feature statistics for reporting.
     Args:
@@ -531,19 +557,19 @@ def _calc_stats(
             encoder=encoder,
             model_results=model_results,
             factor=factor,
-            offset=offset
+            offset=offset,
         )
         for idx, feature in enumerate(features_to_process)
     )
 
 
 def _build_excel_sheet_with_charts(
-        feature_stats: list[pd.DataFrame],
-        writer: pd.ExcelWriter,
-        width: int = 640,
-        height: int = 480,
-        first_plot_position: str = 'A',
-        second_plot_position: str = "J",
+    feature_stats: list[pd.DataFrame],
+    writer: pd.ExcelWriter,
+    width: int = 640,
+    height: int = 480,
+    first_plot_position: str = "A",
+    second_plot_position: str = "J",
 ) -> None:
     """Build excel sheet with charts.
     Args:
@@ -560,92 +586,98 @@ def _build_excel_sheet_with_charts(
     workbook = writer.book
     # Create merge format
     merge_format = workbook.add_format(
-        {
-            'bold': 1,
-            'border': 1,
-            'align': 'center',
-            'valign': 'vcenter'
-        }
+        {"bold": 1, "border": 1, "align": "center", "valign": "vcenter"}
     )
-    const = [result for result in feature_stats if result.name == 'const']
-    iterator = [result for result in feature_stats if ((result is not None) and (result.name != 'const'))]
-    scorecard_iterator = [*const, *iterator]
+    const_results = [result for result in feature_stats if result.name == "const"]
+    iterator = [
+        result
+        for result in feature_stats
+        if ((result is not None) and (result.name != "const"))
+    ]
+    scorecard_iterator = [*const_results, *iterator]
     indexes = np.cumsum([len(result) for result in scorecard_iterator])
     full_features = pd.concat(tuple(scorecard_iterator), ignore_index=True)
-    full_features.to_excel(writer, sheet_name='Scorecard')
-    worksheet = writer.sheets['Scorecard']
+    full_features.to_excel(writer, sheet_name="Scorecard")
+    worksheet = writer.sheets["Scorecard"]
     area_start = 1
     for result, index in zip(scorecard_iterator, indexes):
         for column, column_width in zip([1, 2, 3], [20, 10, 10]):
-            worksheet.merge_range(area_start, column, index, column, result.iloc[0, column - 1], merge_format)
+            worksheet.merge_range(
+                area_start,
+                column,
+                index,
+                column,
+                result.iloc[0, column - 1],
+                merge_format,
+            )
             worksheet.set_column(column, column, column_width)
         area_start = index + 1
 
     for result in iterator:
         # Get dimensions of result Excel sheet and column indexes
         max_row = len(result)
-        event_cnt = result.columns.get_loc('event_cnt') + 1
-        non_event_cnt = result.columns.get_loc('non_event_cnt') + 1
-        score_ball = result.columns.get_loc('score_ball') + 1
-        woe = result.columns.get_loc('WOE') + 1
-        event_rate = result.columns.get_loc('event_rate') + 1
+        event_cnt = result.columns.get_loc("event_cnt") + 1
+        not_event_cnt = result.columns.get_loc("not_event_cnt") + 1
+        score_ball = result.columns.get_loc("score_ball") + 1
+        woe = result.columns.get_loc("WOE") + 1
+        event_rate = result.columns.get_loc("event_rate") + 1
         # Set sheet name, transfer data to sheet
         sheet_name = result.name
         result.to_excel(writer, sheet_name=sheet_name)
         # Get worksheet link
         worksheet = writer.sheets[sheet_name]
         # Create stacked column chart
-        chart_events = workbook.add_chart({'type': 'column', 'subtype': 'stacked'})
+        chart_events = workbook.add_chart({"type": "column", "subtype": "stacked"})
         # Add event and non-event counts to chart
         chart_events.add_series(
             {
-                'name': 'event_cnt ',
-                'values': [sheet_name, 1, event_cnt, max_row, event_cnt]
+                "name": "event_cnt ",
+                "values": [sheet_name, 1, event_cnt, max_row, event_cnt],
             }
         )
         chart_events.add_series(
             {
-                'name': 'non_event_cnt ',
-                'values': [sheet_name, 1, non_event_cnt, max_row, non_event_cnt]
+                "name": "not_event_cnt ",
+                "values": [sheet_name, 1, not_event_cnt, max_row, not_event_cnt],
             }
         )
         # Create separate line chart for combination
-        woe_line = workbook.add_chart({'type': 'line'})
+        woe_line = workbook.add_chart({"type": "line"})
         woe_line.add_series(
             {
-                'name': 'WOE',
-                'values': [sheet_name, 1, woe, max_row, woe],
-                'smooth': False,
-                'y2_axis': True,
+                "name": "WOE",
+                "values": [sheet_name, 1, woe, max_row, woe],
+                "smooth": False,
+                "y2_axis": True,
             }
         )
         # Combine charts
         chart_events.combine(woe_line)
         # Create column chart for score_ball
-        chart_score_ball = workbook.add_chart({'type': 'column'})
+        chart_score_ball = workbook.add_chart({"type": "column"})
         chart_score_ball.add_series(
             {
-                'name': 'score_ball ',
-                'values': [sheet_name, 1, score_ball, max_row, score_ball]
+                "name": "score_ball ",
+                "values": [sheet_name, 1, score_ball, max_row, score_ball],
             }
         )
         # Create separate line chart for combination
-        event_rate_line = workbook.add_chart({'type': 'line'})
+        event_rate_line = workbook.add_chart({"type": "line"})
         event_rate_line.add_series(
             {
-                'name': 'event_rate',
-                'values': [sheet_name, 1, event_rate, max_row, event_rate],
-                'smooth': False,
-                'y2_axis': True,
+                "name": "event_rate",
+                "values": [sheet_name, 1, event_rate, max_row, event_rate],
+                "smooth": False,
+                "y2_axis": True,
             }
         )
         # Combine charts
         chart_score_ball.combine(event_rate_line)
         # Change size and legend of charts
-        chart_events.set_size({'width': width, 'height': height})
-        chart_events.set_legend({'position': 'bottom'})
-        chart_score_ball.set_size({'width': width, 'height': height})
-        chart_score_ball.set_legend({'position': 'bottom'})
+        chart_events.set_size({"width": width, "height": height})
+        chart_events.set_legend({"position": "bottom"})
+        chart_score_ball.set_size({"width": width, "height": height})
+        chart_score_ball.set_legend({"position": "bottom"})
         # Merge first 3 columns
         worksheet.merge_range(1, 1, max_row, 1, result.iloc[1, 0], merge_format)
         worksheet.set_column(1, 1, 20)
@@ -654,18 +686,18 @@ def _build_excel_sheet_with_charts(
         worksheet.merge_range(1, 3, max_row, 3, result.iloc[1, 2], merge_format)
         worksheet.set_column(3, 3, 10)
         # Insert charts
-        worksheet.insert_chart(f'{first_plot_position}{max_row + 3}', chart_events)
-        worksheet.insert_chart(f'{second_plot_position}{max_row + 3}', chart_score_ball)
+        worksheet.insert_chart(f"{first_plot_position}{max_row + 3}", chart_events)
+        worksheet.insert_chart(f"{second_plot_position}{max_row + 3}", chart_score_ball)
 
 
 def save_scorecard_fn(
-        feature_names: List[str],
-        encoder,
-        model_results,
-        base_scorecard_points: int,
-        odds: int,
-        points_to_double_odds: int,
-        path: str,
+    feature_names: List[str],
+    encoder,
+    model_results,
+    base_scorecard_points: int,
+    odds: int,
+    points_to_double_odds: int,
+    path: str,
 ) -> None:
     """Save scorecard.
     Args:
@@ -687,15 +719,12 @@ def save_scorecard_fn(
         encoder=encoder,
         model_results=model_results,
         factor=factor,
-        offset=offset
+        offset=offset,
     )
 
     writer = pd.ExcelWriter(os.path.join(path, "Scorecard.xlsx"), engine="xlsxwriter")
     try:
-        _build_excel_sheet_with_charts(
-            feature_stats=feature_stats,
-            writer=writer
-        )
+        _build_excel_sheet_with_charts(feature_stats=feature_stats, writer=writer)
         writer.save()
     except Exception:
         writer.close()

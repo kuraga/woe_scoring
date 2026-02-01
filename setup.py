@@ -1,10 +1,13 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
+
 from woe_scoring import __version__
 
 DISTNAME = "woe_scoring"
-DESCRIPTION = "Weight Of Evidence Transformer and LogisticRegression model with scikit-learn API"
+DESCRIPTION = (
+    "Weight Of Evidence Transformer and LogisticRegression model with scikit-learn API"
+)
 
-with open("README.md", encoding='utf-8') as f:
+with open("README.md", encoding="utf-8") as f:
     LONG_DESCRIPTION = f.read()
 
 MAINTAINER = "Stroganov Kirill"
@@ -18,11 +21,11 @@ setup(
     version=__version__,
     description=DESCRIPTION,
     long_description=LONG_DESCRIPTION,
-    long_description_content_type='text/markdown',
+    long_description_content_type="text/markdown",
     author=MAINTAINER,
     author_email=MAINTAINER_EMAIL,
     url=URL,
-    download_url="https://github.com/kiraplenkin/woe_scoring/archive/refs/tags/v1.1.0.tar.gz",
+    download_url="https://github.com/kiraplenkin/woe_scoring/archive/refs/tags/v2.0.0.tar.gz",
     license=LICENSE,
     packages=find_packages(),
     include_package_data=True,
@@ -31,7 +34,7 @@ setup(
         "Weight Of Evidence",
         "Monotone Weight Of Evidence Transformation",
         "Scorecard",
-        "LogisticRegression"
+        "LogisticRegression",
     ],
     install_requires=[
         "numpy>=1.19.5",
@@ -41,18 +44,19 @@ setup(
         "scipy>=1.6.1",
         "lxml>=4.8.0",
         "joblib>=1.1.0",
-        "xlsxwriter>=3.0.0"
+        "xlsxwriter>=3.0.0",
     ],
-    python_requires='>=3.7',
+    python_requires=">=3.9",
     zip_safe=False,
     classifiers=[
-        'Development Status :: 4 - Beta',
-        'Intended Audience :: Science/Research',
-        'License :: OSI Approved :: MIT License',
-        'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
-        'Topic :: Scientific/Engineering'
-    ]
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Topic :: Scientific/Engineering",
+    ],
 )

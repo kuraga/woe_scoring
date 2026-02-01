@@ -1,6 +1,6 @@
 import json
 from itertools import combinations
-from typing import List, Union, Tuple
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -8,10 +8,23 @@ from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.multiclass import unique_labels
 
-from .binning.functions import (cat_processing, find_cat_features,
-                                num_processing, prepare_data, refit)
-from .model.functions import (calc_features_gini_quality, check_correlation_threshold, check_features_gini_threshold,
-                              check_min_pct_group, find_bad_features, generate_sql, save_reports, save_scorecard_fn)
+from .binning.functions import (
+    cat_processing,
+    find_cat_features,
+    num_processing,
+    prepare_data,
+    refit,
+)
+from .model.functions import (
+    calc_features_gini_quality,
+    check_correlation_threshold,
+    check_features_gini_threshold,
+    check_min_pct_group,
+    find_bad_features,
+    generate_sql,
+    save_reports,
+    save_scorecard_fn,
+)
 from .model.model import Model
 from .model.selector import FeatureSelector
 
@@ -62,19 +75,19 @@ class WOETransformer(BaseEstimator, TransformerMixin):
     """
 
     def __init__(
-            self,
-            max_bins: Union[int, float] = 10,
-            min_pct_group: float = 0.05,
-            n_jobs: int = 1,
-            prefix: str = "WOE_",
-            merge_type: str = "chi2",
-            cat_features: List[str] = None,
-            special_cols: List[str] = None,
-            cat_features_threshold: int = 0,
-            diff_woe_threshold: float = 0.05,
-            safe_original_data: bool = False,
-            generate_features: bool = False,
-            max_generated_features: int = 20,
+        self,
+        max_bins: Union[int, float] = 10,
+        min_pct_group: float = 0.05,
+        n_jobs: int = 1,
+        prefix: str = "WOE_",
+        merge_type: str = "chi2",
+        cat_features: Optional[List[str]] = None,
+        special_cols: Optional[List[str]] = None,
+        cat_features_threshold: int = 0,
+        diff_woe_threshold: float = 0.05,
+        safe_original_data: bool = False,
+        generate_features: bool = False,
+        max_generated_features: int = 20,
     ):
         self.classes_ = None
         self.max_bins = max_bins
@@ -96,11 +109,11 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         self.generated_features_meta = []
 
     def _generate_features(
-            self,
-            data: pd.DataFrame,
-            target: Union[pd.Series, np.ndarray],
-            cat_features: List[str],
-            num_features: List[str]
+        self,
+        data: pd.DataFrame,
+        target: Union[pd.Series, np.ndarray],
+        cat_features: List[str],
+        num_features: List[str],
     ) -> Tuple[pd.DataFrame, List[str]]:
         """
         Generate new features from existing ones and select the best.
@@ -115,29 +128,35 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             denom = data[col_b].replace(0, 1e-6)
             if pd.api.types.is_numeric_dtype(denom):
                 generated_features[feature_name] = data[col_a] / denom
-                generated_meta_candidates.append({
-                    'name': feature_name,
-                    'type': 'ratio',
-                    'col_a': col_a,
-                    'col_b': col_b
-                })
+                generated_meta_candidates.append(
+                    {
+                        "name": feature_name,
+                        "type": "ratio",
+                        "col_a": col_a,
+                        "col_b": col_b,
+                    }
+                )
 
         # 2. Categorical stats features
         for cat_col in cat_features:
             for num_col in num_features:
                 feature_name = f"STATS_{num_col}_BY_{cat_col}_MEAN"
                 # Calculate mean
-                generated_features[feature_name] = data.groupby(cat_col)[num_col].transform('mean')
+                generated_features[feature_name] = data.groupby(cat_col)[
+                    num_col
+                ].transform("mean")
                 # Store mapping for transform
                 mapping = data.groupby(cat_col)[num_col].mean().to_dict()
-                generated_meta_candidates.append({
-                    'name': feature_name,
-                    'type': 'stats',
-                    'cat_col': cat_col,
-                    'num_col': num_col,
-                    'func': 'mean',
-                    'mapping': mapping
-                })
+                generated_meta_candidates.append(
+                    {
+                        "name": feature_name,
+                        "type": "stats",
+                        "cat_col": cat_col,
+                        "num_col": num_col,
+                        "func": "mean",
+                        "mapping": mapping,
+                    }
+                )
 
         if not generated_features:
             return data, []
@@ -151,20 +170,19 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             target=target,
             feature_names=list(gen_df.columns),
             random_state=42,
-            class_weight='balanced',
+            class_weight="balanced",
             cv=3,
-            scoring='roc_auc',
-            n_jobs=self.n_jobs
+            scoring="roc_auc",
+            n_jobs=self.n_jobs,
         )
 
         # Select best features
         sorted_features = sorted(gini_scores.items(), key=lambda x: x[1], reverse=True)
-        best_features = [f[0] for f in sorted_features[:self.max_generated_features]]
+        best_features = [f[0] for f in sorted_features[: self.max_generated_features]]
 
         # Filter metadata
         self.generated_features_meta = [
-            meta for meta in generated_meta_candidates
-            if meta['name'] in best_features
+            meta for meta in generated_meta_candidates if meta["name"] in best_features
         ]
 
         # Add best features to data
@@ -190,33 +208,30 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             cat_features = find_cat_features(
                 x=data,
                 feature_names=self.feature_names,
-                cat_features_threshold=self.cat_features_threshold
+                cat_features_threshold=self.cat_features_threshold,
             )
 
         if self.generate_features:
             # Identify numeric features for generation
             num_features_for_gen = [
-                feature for feature in self.feature_names
-                if feature not in cat_features
+                feature for feature in self.feature_names if feature not in cat_features
             ]
-            
+
             data, generated_features_list = self._generate_features(
                 data=data,
                 target=target,
                 cat_features=cat_features,
-                num_features=num_features_for_gen
+                num_features=num_features_for_gen,
             )
             # Update feature names with generated ones
             self.feature_names.extend(generated_features_list)
             # Generated features are numeric, so cat_features remains same
-        
+
         self.cat_features_ = cat_features
 
         if len(cat_features) > 0:
             self.num_features = [
-                feature
-                for feature in self.feature_names
-                if feature not in cat_features
+                feature for feature in self.feature_names if feature not in cat_features
             ]
             self.woe_iv_dict = Parallel(n_jobs=self.n_jobs)(
                 delayed(cat_processing)(
@@ -224,8 +239,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                     target,
                     self.min_pct_group,
                     self.max_bins,
-                    self.diff_woe_threshold
-                ) for col in cat_features
+                    self.diff_woe_threshold,
+                )
+                for col in cat_features
             )
         else:
             self.num_features = self.feature_names
@@ -237,22 +253,25 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 self.min_pct_group,
                 self.max_bins,
                 self.diff_woe_threshold,
-                self.merge_type
-            ) for col in self.num_features
+                self.merge_type,
+            )
+            for col in self.num_features
         )
 
         self.woe_iv_dict += num_features_res
-        
+
         # Store effective cat_features for transform
         self.cat_features_ = cat_features
-        
+
         # Append generated features metadata and categorical features list to woe_iv_dict for persistence
-        self.woe_iv_dict.append({
-            'metadata': {
-                'generated_features_meta': self.generated_features_meta,
-                'cat_features': self.cat_features_
+        self.woe_iv_dict.append(
+            {
+                "metadata": {
+                    "generated_features_meta": self.generated_features_meta,
+                    "cat_features": self.cat_features_,
+                }
             }
-        })
+        )
 
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -267,48 +286,48 @@ class WOETransformer(BaseEstimator, TransformerMixin):
 
         data = data.copy()
         features_to_delete = []
-        
+
         # Check for metadata
         generated_meta = []
         clean_woe_iv_dict = []
         cat_features_from_meta = None
-        
+
         for item in self.woe_iv_dict:
-            if 'metadata' in item:
-                generated_meta = item['metadata'].get('generated_features_meta', [])
-                cat_features_from_meta = item['metadata'].get('cat_features')
-            elif 'generated_features_meta' in item: # Backward compatibility for previous step
-                generated_meta = item['generated_features_meta']
+            if "metadata" in item:
+                generated_meta = item["metadata"].get("generated_features_meta", [])
+                cat_features_from_meta = item["metadata"].get("cat_features")
+            elif "generated_features_meta" in item:  # Backward compatibility
+                generated_meta = item["generated_features_meta"]
             else:
                 clean_woe_iv_dict.append(item)
-        
+
         if generated_meta:
-             self.generated_features_meta = generated_meta
-        
+            self.generated_features_meta = generated_meta
+
         # Use fitted cat_features if available
         if cat_features_from_meta is not None:
             self.cat_features_ = cat_features_from_meta
-        
-        cat_features = getattr(self, 'cat_features_', self.cat_features or [])
+
+        cat_features = getattr(self, "cat_features_", self.cat_features or [])
 
         # Generate features if metadata exists
         if self.generated_features_meta:
             for meta in self.generated_features_meta:
-                if meta['type'] == 'ratio':
-                    col_a = meta['col_a']
-                    col_b = meta['col_b']
+                if meta["type"] == "ratio":
+                    col_a = meta["col_a"]
+                    col_b = meta["col_b"]
                     if col_a in data.columns and col_b in data.columns:
                         denom = data[col_b].replace(0, 1e-6)
-                        data[meta['name']] = data[col_a] / denom
-                elif meta['type'] == 'stats':
-                    cat_col = meta['cat_col']
-                    mapping = meta['mapping']
+                        data[meta["name"]] = data[col_a] / denom
+                elif meta["type"] == "stats":
+                    cat_col = meta["cat_col"]
+                    mapping = meta["mapping"]
                     if cat_col in data.columns:
                         # Apply mapping
-                        data[meta['name']] = data[cat_col].map(mapping)
+                        data[meta["name"]] = data[cat_col].map(mapping)
 
         # Use fitted cat_features if available
-        cat_features = getattr(self, 'cat_features_', self.cat_features or [])
+        cat_features = getattr(self, "cat_features_", self.cat_features or [])
 
         # Pre-create all new feature columns
         for woe_iv in clean_woe_iv_dict:
@@ -323,7 +342,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             feature = list(woe_iv)[0]
             woe_iv_feature = woe_iv[feature]
             new_feature = self.prefix + feature
-            
+
             if not woe_iv_feature:
                 continue
 
@@ -342,27 +361,30 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 if len(woe_iv_feature) > 0:
                     # Construct bin edges from contiguous intervals
                     # bin_values["bin"] is [min, max]
-                    edges = [woe_iv_feature[0]["bin"][0]] + [b["bin"][1] for b in woe_iv_feature]
+                    edges = [woe_iv_feature[0]["bin"][0]] + [
+                        b["bin"][1] for b in woe_iv_feature
+                    ]
                     labels = [b["woe"] for b in woe_iv_feature]
-                    
+
                     # pd.cut handles binning efficiently
                     # right=False means intervals are [a, b) matching original logic
-                    # include_lowest=True extends the first interval to be [a, b) as well (mostly relevant if data == min)
+                    # include_lowest=True extends the first interval to be [a, b) as well
                     data[new_feature] = pd.cut(
                         data[feature],
                         bins=edges,
                         labels=labels,
                         right=False,
                         include_lowest=True,
-                        ordered=False
+                        ordered=False,
                     )
-                    
-                    # Convert categorical result to float (pd.cut returns category/object)
-                    # Use to_numeric or astype, but handle NaNs gracefully (they remain NaN)
-                    if data[new_feature].dtype.name == 'category':
+
+                    # Convert categorical result to float
+                    if data[new_feature].dtype.name == "category":
                         data[new_feature] = data[new_feature].astype(float)
                     else:
-                        data[new_feature] = pd.to_numeric(data[new_feature], errors='coerce')
+                        data[new_feature] = pd.to_numeric(
+                            data[new_feature], errors="coerce"
+                        )
                 else:
                     # No bins, everything is NaN (already initialized)
                     pass
@@ -370,8 +392,12 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             # Handle missing values efficiently
             missing_bin = woe_iv["missing_bin"]
             missing_value = (
-                woe_iv_feature[0]["woe"] if missing_bin == "first" or
-                (missing_bin is None and woe_iv_feature[0]["woe"] < woe_iv_feature[-1]["woe"])
+                woe_iv_feature[0]["woe"]
+                if missing_bin == "first"
+                or (
+                    missing_bin is None
+                    and woe_iv_feature[0]["woe"] < woe_iv_feature[-1]["woe"]
+                )
                 else woe_iv_feature[-1]["woe"]
             )
             data.loc[data[new_feature].isna(), new_feature] = missing_value
@@ -420,29 +446,33 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             None
         """
 
-        data, self.feature_names = prepare_data(data=data, special_cols=self.special_cols)
+        data, self.feature_names = prepare_data(
+            data=data, special_cols=self.special_cols
+        )
 
         # Ensure target is numpy array for consistency
-        target_values = target.values if hasattr(target, 'values') else np.array(target)
-        
+        target_values = target.values if hasattr(target, "values") else np.array(target)
+
         # Preserve metadata
         metadata = None
         for item in self.woe_iv_dict:
-            if 'metadata' in item:
+            if "metadata" in item:
                 metadata = item
                 break
 
         # Process in parallel with optimized parameters
-        self.woe_iv_dict = Parallel(n_jobs=self.n_jobs, backend='threading')(
+        self.woe_iv_dict = Parallel(n_jobs=self.n_jobs, backend="threading")(
             delayed(refit)(
                 data[list(woe_iv.keys())[0]],
                 target_values,
                 [_bin["bin"] for _bin in woe_iv[list(woe_iv.keys())[0]]],
                 woe_iv["type_feature"],
-                woe_iv["missing_bin"]
-            ) for woe_iv in self.woe_iv_dict if 'metadata' not in woe_iv
+                woe_iv["missing_bin"],
+            )
+            for woe_iv in self.woe_iv_dict
+            if "metadata" not in woe_iv
         )
-        
+
         # Restore metadata
         if metadata:
             self.woe_iv_dict.append(metadata)
@@ -481,25 +511,25 @@ class CreateModel(BaseEstimator, TransformerMixin):
     """
 
     def __init__(
-            self,
-            selection_method: str = 'rfe',
-            model_type: str = 'sklearn',
-            max_vars: Union[int, float, None] = None,
-            special_cols: List[str] = None,
-            unused_cols: List[str] = None,
-            n_jobs: int = 1,
-            gini_threshold: float = 5.0,
-            iv_threshold: float = 0.05,
-            corr_threshold: float = 0.5,
-            min_pct_group: float = 0.05,
-            random_state: int = None,
-            class_weight: str = 'balanced',
-            direction: str = "forward",
-            cv: int = 3,
-            l1_exp_scale: int = 4,
-            l1_grid_size: int = 20,
-            scoring: str = "roc_auc",
-            vif_threshold: float = 10.0,
+        self,
+        selection_method: str = "rfe",
+        model_type: str = "sklearn",
+        max_vars: Optional[Union[int, float]] = None,
+        special_cols: Optional[List[str]] = None,
+        unused_cols: Optional[List[str]] = None,
+        n_jobs: int = 1,
+        gini_threshold: float = 5.0,
+        iv_threshold: float = 0.05,
+        corr_threshold: float = 0.5,
+        min_pct_group: float = 0.05,
+        random_state: Optional[int] = None,
+        class_weight: str = "balanced",
+        direction: str = "forward",
+        cv: int = 3,
+        l1_exp_scale: int = 4,
+        l1_grid_size: int = 20,
+        scoring: str = "roc_auc",
+        vif_threshold: float = 10.0,
     ):
         self.selection_method = selection_method
         self.model_type = model_type
@@ -530,7 +560,9 @@ class CreateModel(BaseEstimator, TransformerMixin):
 
         self.model = None
 
-    def fit(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> None:
+    def fit(
+        self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]
+    ) -> "CreateModel":
         """
         Fit the model with the given data and target.
 
@@ -550,7 +582,9 @@ class CreateModel(BaseEstimator, TransformerMixin):
 
         # Remove unused columns if specified
         if unused_cols:
-            self.feature_names_ = [f for f in self.feature_names_ if f not in unused_cols]
+            self.feature_names_ = [
+                f for f in self.feature_names_ if f not in unused_cols
+            ]
 
         # Calculate max_vars if it's a ratio
         if self.max_vars is not None and self.max_vars < 1:
@@ -558,7 +592,9 @@ class CreateModel(BaseEstimator, TransformerMixin):
 
         # Filter features based on minimum group percentage
         self.feature_names_ = check_min_pct_group(
-            data=data, feature_names=self.feature_names_, min_pct_group=self.min_pct_group
+            data=data,
+            feature_names=self.feature_names_,
+            min_pct_group=self.min_pct_group,
         )
 
         # Calculate Gini scores for all features in parallel
@@ -570,14 +606,14 @@ class CreateModel(BaseEstimator, TransformerMixin):
             random_state=self.random_state,
             n_jobs=self.n_jobs,
             cv=self.cv,
-            scoring=self.scoring
+            scoring=self.scoring,
         )
 
         # Filter features by Gini threshold
         self.feature_names_ = check_features_gini_threshold(
             feature_names=self.feature_names_,
             features_gini_scores=self.features_gini_scores,
-            gini_threshold=self.gini_threshold
+            gini_threshold=self.gini_threshold,
         )
 
         # Create feature selector
@@ -593,7 +629,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
             l1_grid_size=self.l1_grid_size,
             scoring=self.scoring,
             iv_threshold=self.iv_threshold,
-            vif_threshold=self.vif_threshold
+            vif_threshold=self.vif_threshold,
         )
 
         # Select initial features and check for correlations
@@ -614,7 +650,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
             cv=self.cv,
             class_weight=self.class_weight,
             random_state=self.random_state,
-            scoring=self.scoring
+            scoring=self.scoring,
         )
 
         # Iteratively improve model by removing bad features
@@ -629,16 +665,20 @@ class CreateModel(BaseEstimator, TransformerMixin):
                 break
 
             # Remove bad features and reselect
-            self.feature_names_ = [f for f in self.feature_names_ if f not in bad_features]
+            self.feature_names_ = [
+                f for f in self.feature_names_ if f not in bad_features
+            ]
             if not self.feature_names_:  # Prevent empty feature list
                 break
 
-            selected_features = feature_selector.select(data, target, self.feature_names_)
+            selected_features = feature_selector.select(
+                data, target, self.feature_names_
+            )
             selected_features = check_correlation_threshold(
                 data=data,
                 feature_names=selected_features,
                 features_gini_scores=self.features_gini_scores,
-                corr_threshold=self.corr_threshold
+                corr_threshold=self.corr_threshold,
             )
 
             self.model = selected_model.get_model(data[selected_features], target)
@@ -655,18 +695,20 @@ class CreateModel(BaseEstimator, TransformerMixin):
         # Column 0: Feature names (starting with 'const')
         # Column 'coef': Coefficients
         # Column 'P>|z|': P-values
-        
+
         # Create lists for DataFrame construction
-        res_features = ['const'] + self.feature_names_
+        res_features = ["const"] + self.feature_names_
         res_coefs = [self.intercept_] + self.coef_
         # Pad p-values with NaN for intercept if not available, or 0.0
         res_pvalues = [0.0] + self.pvalues_
-        
-        self.model_results = pd.DataFrame({
-            'const': res_features, # Column name doesn't matter for iloc[:, 0], but naming it 'const' or 'Feature' is cleaner
-            'coef': res_coefs,
-            'P>|z|': res_pvalues
-        })
+
+        self.model_results = pd.DataFrame(
+            {
+                "const": res_features,
+                "coef": res_coefs,
+                "P>|z|": res_pvalues,
+            }
+        )
 
         return self
 
@@ -684,16 +726,16 @@ class CreateModel(BaseEstimator, TransformerMixin):
             encoder=encoder,
             feature_names=self.feature_names_,
             coef=self.coef_,
-            intercept=self.intercept_
+            intercept=self.intercept_,
         )
 
     def save_scorecard(
-            self,
-            encoder,
-            path: str = '.',
-            base_scorecard_points: int = 444,
-            odds: int = 10,
-            points_to_double_odds: int = 69,
+        self,
+        encoder,
+        path: str = ".",
+        base_scorecard_points: int = 444,
+        odds: int = 10,
+        points_to_double_odds: int = 69,
     ):
         save_scorecard_fn(
             feature_names=self.feature_names_,
@@ -702,5 +744,5 @@ class CreateModel(BaseEstimator, TransformerMixin):
             base_scorecard_points=base_scorecard_points,
             odds=odds,
             points_to_double_odds=points_to_double_odds,
-            path=path
+            path=path,
         )
