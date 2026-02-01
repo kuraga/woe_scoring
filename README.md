@@ -7,6 +7,7 @@ Monotone Weight Of Evidence (WOE) Transformer and LogisticRegression model with 
 
 - **WOE Transformation**: Convert categorical and numerical features to Weight of Evidence encoding
 - **Automated Feature Selection**: Multiple algorithms for optimal feature selection
+- **Automated Feature Generation**: Automatically create and select high-quality ratio and interaction features
 - **Binning Strategies**: Smart binning with monotonicity constraints
 - **Sklearn Compatibility**: Follows scikit-learn's API standards
 - **Performance Optimized**: Parallel processing and vectorized operations
@@ -62,6 +63,8 @@ encoder = WOETransformer(
     special_cols=special_cols,
     n_jobs=-1,
     merge_type="chi2",
+    generate_features=True,  # Enable feature generation
+    max_generated_features=10,
 )
 
 encoder.fit(train, train["Survived"])
@@ -132,7 +135,9 @@ WOETransformer(
     special_cols=None,         # Columns to exclude from transformation
     cat_features_threshold=0,  # Threshold for auto-identifying categorical features
     diff_woe_threshold=0.05,   # Minimum WOE difference between bins
-    safe_original_data=False   # Whether to keep original features
+    safe_original_data=False,  # Whether to keep original features
+    generate_features=False,   # Whether to generate new features
+    max_generated_features=20  # Max number of generated features to select
 )
 ```
 
@@ -180,6 +185,25 @@ CreateModel(
 - `save_scorecard(encoder, path, ...)`: Creates credit scorecard
 
 ## Advanced Usage
+
+### Automated Feature Generation
+
+WOE-Scoring can automatically generate and select high-quality features from your data:
+
+```python
+encoder = WOETransformer(
+    generate_features=True,    # Enable feature generation
+    max_generated_features=20, # Select top 20 new features
+    n_jobs=-1
+)
+encoder.fit(X, y)
+```
+This process:
+1. Creates ratio features from all pairs of numeric columns
+2. Calculates statistical aggregations (mean) for numeric columns grouped by categorical columns
+3. Calculates the Gini score for all new features
+4. Selects the top `max_generated_features`
+5. Adds them to the dataset and proceeds with WOE binning
 
 ### Generating SQL for Deployment
 
