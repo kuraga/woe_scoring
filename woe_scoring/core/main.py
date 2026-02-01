@@ -1,5 +1,6 @@
 import json
-from typing import List, Union
+from itertools import combinations
+from typing import List, Union, Tuple
 
 import numpy as np
 import pandas as pd
@@ -72,6 +73,8 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             cat_features_threshold: int = 0,
             diff_woe_threshold: float = 0.05,
             safe_original_data: bool = False,
+            generate_features: bool = False,
+            max_generated_features: int = 20,
     ):
         self.classes_ = None
         self.max_bins = max_bins
@@ -84,10 +87,90 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         self.prefix = prefix
         self.safe_original_data = safe_original_data
         self.merge_type = merge_type
+        self.generate_features = generate_features
+        self.max_generated_features = max_generated_features
 
         self.woe_iv_dict = []
         self.feature_names = []
         self.num_features = []
+        self.generated_features_meta = []
+
+    def _generate_features(
+            self,
+            data: pd.DataFrame,
+            target: Union[pd.Series, np.ndarray],
+            cat_features: List[str],
+            num_features: List[str]
+    ) -> Tuple[pd.DataFrame, List[str]]:
+        """
+        Generate new features from existing ones and select the best.
+        """
+        generated_features = {}
+        generated_meta_candidates = []
+
+        # 1. Ratio features
+        for col_a, col_b in combinations(num_features, 2):
+            feature_name = f"RATIO_{col_a}_DIV_{col_b}"
+            # Avoid division by zero
+            denom = data[col_b].replace(0, 1e-6)
+            if pd.api.types.is_numeric_dtype(denom):
+                generated_features[feature_name] = data[col_a] / denom
+                generated_meta_candidates.append({
+                    'name': feature_name,
+                    'type': 'ratio',
+                    'col_a': col_a,
+                    'col_b': col_b
+                })
+
+        # 2. Categorical stats features
+        for cat_col in cat_features:
+            for num_col in num_features:
+                feature_name = f"STATS_{num_col}_BY_{cat_col}_MEAN"
+                # Calculate mean
+                generated_features[feature_name] = data.groupby(cat_col)[num_col].transform('mean')
+                # Store mapping for transform
+                mapping = data.groupby(cat_col)[num_col].mean().to_dict()
+                generated_meta_candidates.append({
+                    'name': feature_name,
+                    'type': 'stats',
+                    'cat_col': cat_col,
+                    'num_col': num_col,
+                    'func': 'mean',
+                    'mapping': mapping
+                })
+
+        if not generated_features:
+            return data, []
+
+        # Create DataFrame from generated features
+        gen_df = pd.DataFrame(generated_features, index=data.index)
+
+        # Calculate Gini for selection
+        gini_scores = calc_features_gini_quality(
+            data=gen_df,
+            target=target,
+            feature_names=list(gen_df.columns),
+            random_state=42,
+            class_weight='balanced',
+            cv=3,
+            scoring='roc_auc',
+            n_jobs=self.n_jobs
+        )
+
+        # Select best features
+        sorted_features = sorted(gini_scores.items(), key=lambda x: x[1], reverse=True)
+        best_features = [f[0] for f in sorted_features[:self.max_generated_features]]
+
+        # Filter metadata
+        self.generated_features_meta = [
+            meta for meta in generated_meta_candidates
+            if meta['name'] in best_features
+        ]
+
+        # Add best features to data
+        data = pd.concat([data, gen_df[best_features]], axis=1)
+
+        return data, best_features
 
     def fit(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> None:
         """
@@ -103,12 +186,31 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         data, self.feature_names = prepare_data(data=data, special_cols=special_cols)
         self.classes_ = unique_labels(target)
 
-        if len(cat_features) == 0 and self.cat_features_threshold > 0:
+        if len(cat_features) == 0:
             cat_features = find_cat_features(
-                data=data,
+                x=data,
                 feature_names=self.feature_names,
                 cat_features_threshold=self.cat_features_threshold
             )
+
+        if self.generate_features:
+            # Identify numeric features for generation
+            num_features_for_gen = [
+                feature for feature in self.feature_names
+                if feature not in cat_features
+            ]
+            
+            data, generated_features_list = self._generate_features(
+                data=data,
+                target=target,
+                cat_features=cat_features,
+                num_features=num_features_for_gen
+            )
+            # Update feature names with generated ones
+            self.feature_names.extend(generated_features_list)
+            # Generated features are numeric, so cat_features remains same
+        
+        self.cat_features_ = cat_features
 
         if len(cat_features) > 0:
             self.num_features = [
@@ -143,6 +245,14 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         
         # Store effective cat_features for transform
         self.cat_features_ = cat_features
+        
+        # Append generated features metadata and categorical features list to woe_iv_dict for persistence
+        self.woe_iv_dict.append({
+            'metadata': {
+                'generated_features_meta': self.generated_features_meta,
+                'cat_features': self.cat_features_
+            }
+        })
 
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -158,11 +268,50 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         data = data.copy()
         features_to_delete = []
         
+        # Check for metadata
+        generated_meta = []
+        clean_woe_iv_dict = []
+        cat_features_from_meta = None
+        
+        for item in self.woe_iv_dict:
+            if 'metadata' in item:
+                generated_meta = item['metadata'].get('generated_features_meta', [])
+                cat_features_from_meta = item['metadata'].get('cat_features')
+            elif 'generated_features_meta' in item: # Backward compatibility for previous step
+                generated_meta = item['generated_features_meta']
+            else:
+                clean_woe_iv_dict.append(item)
+        
+        if generated_meta:
+             self.generated_features_meta = generated_meta
+        
+        # Use fitted cat_features if available
+        if cat_features_from_meta is not None:
+            self.cat_features_ = cat_features_from_meta
+        
+        cat_features = getattr(self, 'cat_features_', self.cat_features or [])
+
+        # Generate features if metadata exists
+        if self.generated_features_meta:
+            for meta in self.generated_features_meta:
+                if meta['type'] == 'ratio':
+                    col_a = meta['col_a']
+                    col_b = meta['col_b']
+                    if col_a in data.columns and col_b in data.columns:
+                        denom = data[col_b].replace(0, 1e-6)
+                        data[meta['name']] = data[col_a] / denom
+                elif meta['type'] == 'stats':
+                    cat_col = meta['cat_col']
+                    mapping = meta['mapping']
+                    if cat_col in data.columns:
+                        # Apply mapping
+                        data[meta['name']] = data[cat_col].map(mapping)
+
         # Use fitted cat_features if available
         cat_features = getattr(self, 'cat_features_', self.cat_features or [])
 
         # Pre-create all new feature columns
-        for woe_iv in self.woe_iv_dict:
+        for woe_iv in clean_woe_iv_dict:
             feature = list(woe_iv)[0]
             new_feature = self.prefix + feature
             data[new_feature] = np.nan
@@ -170,10 +319,13 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 features_to_delete.append(feature)
 
         # Apply transformations
-        for woe_iv in self.woe_iv_dict:
+        for woe_iv in clean_woe_iv_dict:
             feature = list(woe_iv)[0]
             woe_iv_feature = woe_iv[feature]
             new_feature = self.prefix + feature
+            
+            if not woe_iv_feature:
+                continue
 
             # Apply bins based on feature type
             if feature in cat_features:
@@ -208,9 +360,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                     # Convert categorical result to float (pd.cut returns category/object)
                     # Use to_numeric or astype, but handle NaNs gracefully (they remain NaN)
                     if data[new_feature].dtype.name == 'category':
-                         data[new_feature] = data[new_feature].astype(float)
+                        data[new_feature] = data[new_feature].astype(float)
                     else:
-                         data[new_feature] = pd.to_numeric(data[new_feature], errors='coerce')
+                        data[new_feature] = pd.to_numeric(data[new_feature], errors='coerce')
                 else:
                     # No bins, everything is NaN (already initialized)
                     pass
@@ -272,6 +424,13 @@ class WOETransformer(BaseEstimator, TransformerMixin):
 
         # Ensure target is numpy array for consistency
         target_values = target.values if hasattr(target, 'values') else np.array(target)
+        
+        # Preserve metadata
+        metadata = None
+        for item in self.woe_iv_dict:
+            if 'metadata' in item:
+                metadata = item
+                break
 
         # Process in parallel with optimized parameters
         self.woe_iv_dict = Parallel(n_jobs=self.n_jobs, backend='threading')(
@@ -281,8 +440,12 @@ class WOETransformer(BaseEstimator, TransformerMixin):
                 [_bin["bin"] for _bin in woe_iv[list(woe_iv.keys())[0]]],
                 woe_iv["type_feature"],
                 woe_iv["missing_bin"]
-            ) for woe_iv in self.woe_iv_dict
+            ) for woe_iv in self.woe_iv_dict if 'metadata' not in woe_iv
         )
+        
+        # Restore metadata
+        if metadata:
+            self.woe_iv_dict.append(metadata)
 
 
 class CreateModel(BaseEstimator, TransformerMixin):
