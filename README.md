@@ -155,7 +155,7 @@ The `CreateModel` class combines feature selection, model training, and model ev
 
 ```python
 CreateModel(
-    selection_method='rfe',    # Feature selection method ('rfe', 'sfs', 'iv')
+    selection_method='rfe',    # Feature selection method ('rfe', 'sfs', 'iv', 'vif')
     model_type='sklearn',      # Model implementation ('sklearn', 'statsmodel')
     max_vars=None,             # Maximum number of features to select
     special_cols=None,         # Columns to include as-is
@@ -171,7 +171,8 @@ CreateModel(
     cv=3,                      # Cross-validation folds
     l1_exp_scale=4,            # Exponent scale for L1 regularization
     l1_grid_size=20,           # Grid size for L1 regularization search
-    scoring='roc_auc'          # Performance metric
+    scoring='roc_auc',         # Performance metric
+    vif_threshold=10.0         # Minimum VIF threshold for feature selection
 )
 ```
 

@@ -72,7 +72,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         cat_features_threshold: Maximum number of unique values allowed for a feature to be considered categorical. Defaults to 0.
         diff_woe_threshold: Minimum WOE difference allowed between any two adjacent bins for each feature. Defaults to 0.05.
         safe_original_data: Whether to keep a copy of the original data. Defaults to False.
-    """
+        generate_features: Whether to generate new features. Defaults to False
+        max_generated_features: Max number of generated features to select. Defaults to 20
+        """
 
     def __init__(
         self,
@@ -486,28 +488,30 @@ class CreateModel(BaseEstimator, TransformerMixin):
     supporting multiple selection techniques and model types.
 
     Args:
-        selection_method (str): Feature selection method: 'rfe', 'sfs', or 'iv'.
+        selection_method (str): Feature selection method: 'rfe', 'sfs', 'iv' or 'vif'. Defaults to 'rfe'.
             - 'rfe': Recursive Feature Elimination
             - 'sfs': Sequential Feature Selection
             - 'iv': Information Value based selection
-        model_type (str): Model type: 'sklearn' or 'statsmodel'.
-        max_vars (int, float, None): Maximum number of features to select.
+            - 'vif': Variance Inflation Factor for removing multicollinearity
+        model_type (str): Model type: 'sklearn' or 'statsmodel'. Defaults to 'sklearn'.
+        max_vars (int, float, None): Maximum number of features to select. Defaults to None.
             If float < 1, interpreted as a percentage of total features.
             If None, no limit is applied.
         special_cols (list, optional): Special columns to include in selection.
         unused_cols (list, optional): Columns to exclude from selection.
-        n_jobs (int): Number of CPU cores for parallelization.
-        gini_threshold (float): Minimum Gini score to retain a feature.
-        iv_threshold (float): Minimum information value threshold for 'iv' method.
-        corr_threshold (float): Maximum correlation allowed between features.
-        min_pct_group (float): Minimum percentage for each target class.
+        n_jobs (int): Number of CPU cores for parallelization. Defaults to 1.
+        gini_threshold (float): Minimum Gini score to retain a feature. Defaults to 5.0.
+        iv_threshold (float): Minimum information value threshold for 'iv' method. Defaults to 0.05.
+        corr_threshold (float): Maximum correlation allowed between features. Defaults to 0.5.
+        min_pct_group (float): Minimum percentage for each target class. Defaults to 0.05.
         random_state (int, optional): Random seed for reproducible results.
-        class_weight (str): Class weight strategy ('balanced' or None).
-        direction (str): Feature selection direction: 'forward' or 'backward'.
-        cv (int): Number of cross-validation folds.
-        l1_exp_scale (int): Exponent scale for L1 regularization grid.
-        l1_grid_size (int): Grid size for L1 regularization search.
-        scoring (str): Metric for model evaluation (e.g., 'roc_auc').
+        class_weight (str): Class weight strategy ('balanced' or None). Defaults to 'balanced'.
+        direction (str): Feature selection direction: 'forward' or 'backward'. Defaults to 'forward'.
+        cv (int): Number of cross-validation folds. Defaults to 3.
+        l1_exp_scale (int): Exponent scale for L1 regularization grid. Defaults to 4.
+        l1_grid_size (int): Grid size for L1 regularization search. Defaults to 20.
+        scoring (str): Metric for model evaluation. Defaults to 'roc_auc'.
+        vif_threshold (float): Minimum information value threshold for 'vif' method. Defaults to 10.0.
     """
 
     def __init__(
