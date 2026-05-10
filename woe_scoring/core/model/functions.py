@@ -722,10 +722,5 @@ def save_scorecard_fn(
         offset=offset,
     )
 
-    writer = pd.ExcelWriter(os.path.join(path, "Scorecard.xlsx"), engine="xlsxwriter")
-    try:
+    with pd.ExcelWriter(os.path.join(path, "Scorecard.xlsx"), engine="xlsxwriter") as writer:
         _build_excel_sheet_with_charts(feature_stats=feature_stats, writer=writer)
-        writer.save()
-    except Exception:
-        writer.close()
-        raise
