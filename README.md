@@ -80,25 +80,10 @@ model = LogisticRegression()
 model.fit(enc_train, train["Survived"])
 test_proba = model.predict_proba(enc_test)[:, 1]
 ```
-3. Use CreateModel:
+3. Then use CreateModel:
 
 ```python
-import pandas as pd
 from woe_scoring import CreateModel
-from sklearn.model_selection import train_test_split
-
-df = pd.read_csv("titanic_data.csv")
-train, test = train_test_split(
-    df, test_size=0.3, random_state=42, stratify=df["Survived"]
-)
-
-special_cols = [
-    "PassengerId",
-    "Survived",
-    "Name",
-    "Ticket",
-    "Cabin",
-]
 
 model = CreateModel(
     max_vars=5,
@@ -111,8 +96,8 @@ model = CreateModel(
     class_weight="balanced",
     cv=3,
 )
-model.fit(train, train["Survived"])
-test_proba = model.predict_proba(test[model.feature_names_])
+model.fit(enc_train, train["Survived"])
+test_proba = model.predict_proba(enc_test[model.feature_names_])
 
 print(model.coef_, model.intercept_)
 print(model.feature_names_)
