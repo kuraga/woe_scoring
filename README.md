@@ -62,6 +62,7 @@ encoder = WOETransformer(
     cat_features=cat_cols,
     special_cols=special_cols,
     n_jobs=-1,
+    random_state=42,
     merge_type="chi2",
     generate_features=True,  # Enable feature generation
     max_generated_features=10,
@@ -114,6 +115,7 @@ WOETransformer(
     max_bins=10,               # Maximum number of bins for each feature
     min_pct_group=0.05,        # Minimum percentage of each bin
     n_jobs=1,                  # Number of parallel jobs
+    random_state=None,         # Random seed for reproducibility
     prefix="WOE_",             # Prefix for transformed features
     merge_type="chi2",         # Bin merging strategy ('chi2', 'woe', 'monotonic')
     cat_features=None,         # List of categorical features
@@ -180,7 +182,8 @@ WOE-Scoring can automatically generate and select high-quality features from you
 encoder = WOETransformer(
     generate_features=True,    # Enable feature generation
     max_generated_features=20, # Select top 20 new features
-    n_jobs=-1
+    n_jobs=-1,
+    random_state=42
 )
 encoder.fit(X, y)
 ```

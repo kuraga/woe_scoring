@@ -72,8 +72,9 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         cat_features_threshold: Maximum number of unique values allowed for a feature to be considered categorical. Defaults to 0.
         diff_woe_threshold: Minimum WOE difference allowed between any two adjacent bins for each feature. Defaults to 0.05.
         safe_original_data: Whether to keep a copy of the original data. Defaults to False.
-        generate_features: Whether to generate new features. Defaults to False
-        max_generated_features: Max number of generated features to select. Defaults to 20
+        generate_features: Whether to generate new features. Defaults to False.
+        max_generated_features: Max number of generated features to select. Defaults to 20.
+        random_state (int, optional): Random seed for reproducible results.
         """
 
     def __init__(
@@ -90,7 +91,8 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         safe_original_data: bool = False,
         generate_features: bool = False,
         max_generated_features: int = 20,
-    ):
+        random_state: Optional[int] = None,
+):
         self.classes_ = None
         self.max_bins = max_bins
         self.min_pct_group = min_pct_group
@@ -99,6 +101,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         self.cat_features_threshold = cat_features_threshold
         self.diff_woe_threshold = diff_woe_threshold
         self.n_jobs = n_jobs
+        self.random_state = random_state
         self.prefix = prefix
         self.safe_original_data = safe_original_data
         self.merge_type = merge_type
@@ -171,7 +174,7 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             data=gen_df,
             target=target,
             feature_names=list(gen_df.columns),
-            random_state=42,
+            random_state=self.random_state,
             class_weight="balanced",
             cv=3,
             scoring="roc_auc",

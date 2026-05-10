@@ -33,6 +33,7 @@ class TestCreateModel(unittest.TestCase):
             max_bins=10,
             min_pct_group=0.05,
             n_jobs=1,
+            random_state=42,
             prefix="WOE_",
             merge_type="chi2",
             cat_features=None,
