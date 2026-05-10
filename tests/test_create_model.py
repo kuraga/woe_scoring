@@ -119,16 +119,19 @@ class TestCreateModel(unittest.TestCase):
     def test_generate_sql(self):
         """Test the generate_sql method of CreateModel"""
         # Generate SQL
-        sql = self.model.generate_sql(encoder=self.transformer)
+        sql = self.model.generate_sql(encoder=self.transformer, source_table="features_data")
 
         # Check if SQL is a non-empty string
         self.assertTrue(isinstance(sql, str))
         self.assertTrue(len(sql) > 0)
 
         # Check if SQL contains key elements
+        self.assertIn("FROM features_data", sql)
         self.assertIn("CASE", sql)
         self.assertIn("END", sql)
         self.assertIn("WHEN", sql)
+        self.assertIn("EXP", sql)
+        self.assertIn("as PD", sql)
 
     def test_save_scorecard(self):
         """Test the save_scorecard method of CreateModel"""

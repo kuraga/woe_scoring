@@ -721,12 +721,13 @@ class CreateModel(BaseEstimator, TransformerMixin):
     def predict(self, data: pd.DataFrame) -> np.ndarray:
         return self.model.predict(data)
 
-    def generate_sql(self, encoder) -> str:
+    def generate_sql(self, encoder, source_table: str = "feature_store") -> str:
         return generate_sql(
             encoder=encoder,
             feature_names=self.feature_names_,
             coef=self.coef_,
             intercept=self.intercept_,
+            source_table=source_table,
         )
 
     def save_scorecard(

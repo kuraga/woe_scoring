@@ -181,7 +181,7 @@ CreateModel(
 - `predict(data)`: Makes binary predictions
 - `predict_proba(data)`: Returns probability predictions
 - `save_reports(path)`: Saves model reports
-- `generate_sql(encoder)`: Generates SQL for model deployment
+- `generate_sql(encoder, ...)`: Generates SQL for model deployment
 - `save_scorecard(encoder, path, ...)`: Creates credit scorecard
 
 ## Advanced Usage
@@ -217,7 +217,10 @@ model = CreateModel()
 model.fit(train_woe, train["target"])
 
 # Generate SQL query for scoring
-sql_query = model.generate_sql(encoder)
+sql_query = model.generate_sql(
+    encoder=encoder,
+    source_table="feature_store"
+)
 ```
 
 ### Creating a Scorecard
@@ -227,9 +230,9 @@ sql_query = model.generate_sql(encoder)
 model.save_scorecard(
     encoder=encoder,
     path="output_dir",
-    base_scorecard_points=600,  # Base score
-    odds=50,                    # Base odds
-    points_to_double_odds=20    # Points to double the odds
+    base_scorecard_points=444,  # Base score
+    odds=10,                    # Base odds
+    points_to_double_odds=69    # Points to double the odds
 )
 ```
 

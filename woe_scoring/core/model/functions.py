@@ -301,6 +301,7 @@ def generate_sql(
     feature_names: List[str],
     coef: List[float],
     intercept: float,
+    source_table: str = 'feature_store',
 ) -> str:
     """
     Generate SQL query for model deployment based on fitted model.
@@ -310,6 +311,7 @@ def generate_sql(
         feature_names: List of feature names in the model
         coef: List of coefficient values
         intercept: Intercept value
+        source_table: Name of database table with features data
 
     Returns:
         str: SQL query for model scoring
@@ -397,7 +399,7 @@ def generate_sql(
 
     # Add model formula
     sql.extend(
-        [" FROM )", ", b as (", "SELECT a.*", f", REPLACE(1 / (1 + EXP(-({intercept}"]
+        [" FROM ", source_table, ")", ", b as (", "SELECT a.*", f", 1 / (1 + EXP(-({intercept}"]
     )
 
     # Add feature coefficients
@@ -405,7 +407,7 @@ def generate_sql(
         sql.append(f" + ({coef[idx]} * a.{feature})")
 
     # Finish query
-    sql.extend(["))), ',', '.') as PD", " FROM a) ", "SELECT * FROM b"])
+    sql.extend(["))) as PD", " FROM a) ", "SELECT * FROM b"])
 
     return "".join(sql)
 
