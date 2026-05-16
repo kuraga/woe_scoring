@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -100,6 +100,8 @@ class Model:
         intercept_: Model intercept
         feature_names_: Features used in the model
         model_score_: Cross-validation performance score
+        se_: Standard error of each feature
+        t_: t-statistic of each feature
         pvalues_: Statistical significance of each feature
     """
 
@@ -121,6 +123,8 @@ class Model:
         self.intercept_ = 0.0
         self.feature_names_ = []
         self.model_score_ = 0.0
+        self.se_ = []
+        self.t_ = []
         self.pvalues_ = []
 
     def get_model(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray]) -> callable:
@@ -187,8 +191,11 @@ class Model:
             model, data, target_array, cv=self.cv, n_jobs=self.n_jobs, scoring=self.scoring
         ).mean()
 
-        # Calculate statistical significance
-        self.pvalues_ = list(self._calc_pvalues(model, data))
+        # Calculate standard error, t-statistic and statistical significance of each feature
+        model_values = self._calc_pvalues_ex(model, data)
+        self.se_ = list(model_values[0])
+        self.t_ = list(model_values[1])
+        self.pvalues_ = list(model_values[2])
 
         return model
 
@@ -213,9 +220,9 @@ class Model:
         self.pvalues_ = list(model.model_.pvalues)[1:]
         return model
 
-    def _calc_pvalues(self, model: callable, data: pd.DataFrame) -> np.ndarray:
+    def _calc_pvalues_ex(self, model: callable, data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Calculates p-values for a logistic regression model using the Wald test.
+        Calculates standard errors, t-statistics and p-values for a logistic regression model using the Wald test.
 
         This implements the statistical test for coefficient significance based on
         the asymptotic normality of maximum likelihood estimates.
@@ -225,7 +232,10 @@ class Model:
             data: A Pandas DataFrame of features.
 
         Returns:
-            A NumPy array of p-values for each feature.
+            A tuple of:
+            - NumPy array of standard errors for each feature.
+            - NumPy array of t-statistics for each feature.
+            - NumPy array of p-values for each feature.
         """
         # Get predicted probabilities
         p = model.predict_proba(data)[:, 1]
@@ -260,4 +270,20 @@ class Model:
         p_values = (1 - norm.cdf(abs(t))) * 2
 
         # Return p-values for features (excluding intercept)
-        return p_values[1:]
+        return (se[1:], t[1:], p_values[1:])
+
+    def _calc_pvalues(self, model: callable, data: pd.DataFrame) -> np.ndarray:
+        """
+        Calculates p-values for a logistic regression model using the Wald test.
+
+        This implements the statistical test for coefficient significance based on
+        the asymptotic normality of maximum likelihood estimates.
+
+        Args:
+            model: A logistic regression model fit using scikit-learn.
+            data: A Pandas DataFrame of features.
+
+        Returns:
+            A NumPy array of p-values for each feature.
+        """
+        return self._calc_pvalues_ex(model, data)[2]

@@ -563,6 +563,8 @@ class CreateModel(BaseEstimator, TransformerMixin):
         self.intercept_ = None
         self.feature_names_ = []
         self.model_score_ = None
+        self.se_ = []
+        self.t_ = []
         self.pvalues_ = []
 
         self.model = None
@@ -695,24 +697,31 @@ class CreateModel(BaseEstimator, TransformerMixin):
         self.intercept_ = selected_model.intercept_
         self.feature_names_ = selected_model.feature_names_
         self.model_score_ = selected_model.model_score_
+        self.se_ = selected_model.se_
+        self.t_ = selected_model.t_
         self.pvalues_ = selected_model.pvalues_
 
         # Construct model_results DataFrame for save_scorecard
         # Expected structure:
         # Column 0: Feature names (starting with 'const')
         # Column 'coef': Coefficients
+        # Column 'StdErr': Standard Errors
+        # Column 't': t-Statistics
         # Column 'P>|z|': P-values
 
         # Create lists for DataFrame construction
         res_features = ["const"] + self.feature_names_
         res_coefs = [self.intercept_] + self.coef_
-        # Pad p-values with NaN for intercept if not available, or 0.0
+        res_se = [0.0] + self.se_
+        res_t = [0.0] + self.t_
         res_pvalues = [0.0] + self.pvalues_
 
         self.model_results = pd.DataFrame(
             {
                 "const": res_features,
                 "coef": res_coefs,
+                "StdErr": res_se,
+                "t": res_t,
                 "P>|z|": res_pvalues,
             }
         )
