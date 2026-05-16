@@ -226,10 +226,11 @@ def check_min_pct_group(
     return valid_features
 
 
-def find_bad_features(model: Model) -> List[str]:
+def find_bad_features(model: Model, threshold: float = 0.05) -> List[str]:
     """Find features with high p-values and positive sign.
     Args:
         model: Model.
+        threshold: Threshold for p-value (defaults to 0.05).
     Returns:
         List of features with high p-values or positive coefficients.
     """
@@ -238,7 +239,7 @@ def find_bad_features(model: Model) -> List[str]:
     for i, feature in enumerate(model.feature_names_):
         # Check if p-value is too high (not statistically significant)
         # or if coefficient is positive (for binary classification with 0/1 target)
-        if model.pvalues_[i] > 0.05 or model.coef_[i] > 0:
+        if model.pvalues_[i] > threshold or model.coef_[i] > 0:
             bad_features.append(feature)
 
     return bad_features
