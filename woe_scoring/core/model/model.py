@@ -177,7 +177,7 @@ class Model:
             tol=1e-5,
             max_iter=5000,
             scoring=self.scoring,
-            penalty='l1',
+            l1_ratios=(1,),
             solver='liblinear'  # Best for L1 penalty
         ).fit(data, target_array)
 

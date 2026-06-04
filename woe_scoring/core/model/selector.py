@@ -228,7 +228,7 @@ class FeatureSelector:
             n_jobs=1,  # Use 1 here to avoid nested parallelism
             tol=1e-5,
             max_iter=5000,
-            penalty="l2",
+            l1_ratio=0,
             warm_start=True,
             solver='liblinear',  # More efficient for this task
             C=C
@@ -286,7 +286,7 @@ class FeatureSelector:
             n_jobs=1,  # Use 1 here to avoid nested parallelism
             tol=1e-5,
             max_iter=5000,
-            penalty="l2",
+            l1_ratio=0,
             warm_start=True,
             solver='liblinear',  # More efficient for feature selection
             C=C
