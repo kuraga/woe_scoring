@@ -46,7 +46,6 @@ def calculate_gini_score(
         random_state=random_state,
         class_weight=class_weight,
         max_iter=1000,
-        n_jobs=1,  # Use 1 for the inner job to avoid nested parallelism
         warm_start=True,
         solver="liblinear",  # Faster for small datasets/single feature
     )

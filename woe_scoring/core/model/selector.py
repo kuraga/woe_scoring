@@ -225,7 +225,6 @@ class FeatureSelector:
         estimator = LogisticRegression(
             class_weight=self.class_weight,
             random_state=self.random_state,
-            n_jobs=1,  # Use 1 here to avoid nested parallelism
             tol=1e-5,
             max_iter=5000,
             l1_ratio=0,
@@ -283,7 +282,6 @@ class FeatureSelector:
         estimator = LogisticRegression(
             class_weight=self.class_weight,
             random_state=self.random_state,
-            n_jobs=1,  # Use 1 here to avoid nested parallelism
             tol=1e-5,
             max_iter=5000,
             l1_ratio=0,
