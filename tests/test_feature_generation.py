@@ -29,6 +29,7 @@ class TestFeatureGeneration(unittest.TestCase):
 
     def test_generate_features(self):
         transformer = WOETransformer(
+            cat_features=['C'],
             max_bins=5,
             min_pct_group=0.05,
             generate_features=True,
@@ -94,6 +95,7 @@ class TestFeatureGeneration(unittest.TestCase):
     def test_safe_original_data_with_generated_features(self):
         # Test safe_original_data=False (default)
         transformer = WOETransformer(
+            cat_features=['C'],
             max_bins=5,
             generate_features=True,
             safe_original_data=False,
@@ -113,6 +115,7 @@ class TestFeatureGeneration(unittest.TestCase):
 
         # Test safe_original_data=True
         transformer_safe = WOETransformer(
+            cat_features=['C'],
             max_bins=5,
             generate_features=True,
             safe_original_data=True,
