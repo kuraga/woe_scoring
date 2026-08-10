@@ -41,9 +41,7 @@ class TestCreateModel(unittest.TestCase):
             diff_woe_threshold=0.05,
             safe_original_data=False
         )
-        # Add necessary attributes without calling fit
-        self.transformer.feature_names = self.X.columns.tolist()
-        self.transformer.woe_iv_dict = []
+        self.transformer.fit(self.X, self.y)
 
         # Default parameters for model
         self.model = CreateModel(
@@ -58,6 +56,10 @@ class TestCreateModel(unittest.TestCase):
             cv=3,
             scoring='roc_auc'
         )
+        # Add necessary attributes without calling fit
+        self.model.feature_names_ = self.X.columns.tolist()
+        self.model.coef_ = [0.1, -0.1]
+        self.model.intercept_ = 0.2
 
         # Patch the model methods to avoid actual computation
         self.mock_fit()
@@ -75,7 +77,6 @@ class TestCreateModel(unittest.TestCase):
         self.model.fit = MagicMock(return_value=self.model)
         self.model.predict = MagicMock(return_value=np.random.randint(0, 2, len(self.X)))
         self.model.predict_proba = MagicMock(return_value=np.random.random(len(self.X)))
-        self.model.generate_sql = MagicMock(return_value="CASE WHEN WOE_numeric1 > 0 THEN 1 ELSE 0 END")
         self.model.save_scorecard = MagicMock()
 
     def test_fit(self):
@@ -118,10 +119,7 @@ class TestCreateModel(unittest.TestCase):
     def test_generate_sql(self):
         """Test the generate_sql method of CreateModel"""
         # Generate SQL
-        sql = self.model.generate_sql()
-
-        # Verify generate_sql was called
-        self.model.generate_sql.assert_called_once()
+        sql = self.model.generate_sql(encoder=self.transformer)
 
         # Check if SQL is a non-empty string
         self.assertTrue(isinstance(sql, str))
