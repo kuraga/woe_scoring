@@ -208,7 +208,10 @@ model.fit(train_woe, train["target"])
 # Generate SQL query for scoring
 sql_query = model.generate_sql(
     encoder=encoder,
-    source_table="feature_store"
+    source_table="feature_store",
+    base_scorecard_points=444,  # Base score
+    odds=10,                    # Base odds
+    points_to_double_odds=69    # Points to double the odds
 )
 ```
 

@@ -131,6 +131,7 @@ class TestCreateModel(unittest.TestCase):
         self.assertIn("CASE", sql)
         self.assertIn("END", sql)
         self.assertIn("WHEN", sql)
+        self.assertIn("as score", sql)
         self.assertIn("EXP", sql)
         self.assertIn("as PD", sql)
 

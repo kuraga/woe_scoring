@@ -302,6 +302,9 @@ def generate_sql(
     coef: List[float],
     intercept: float,
     source_table: str = 'feature_store',
+    base_scorecard_points: int = 444,
+    odds: int = 10,
+    points_to_double_odds: int = 69
 ) -> str:
     """
     Generate SQL query for model deployment based on fitted model.
@@ -312,12 +315,18 @@ def generate_sql(
         coef: List of coefficient values
         intercept: Intercept value
         source_table: Name of database table with features data
+        base_scorecard_points: Base scorecard points.
+        odds: Odds.
+        points_to_double_odds: Points to double odds.
 
     Returns:
         str: SQL query for model scoring
     """
     # Strip WOE_ prefix from original feature names
     base_features = [var.replace("WOE_", "") for var in feature_names]
+
+    factor = points_to_double_odds / np.log(2)
+    offset = base_scorecard_points - factor * np.log(odds)
 
     # Initialize SQL query parts
     sql = [
@@ -397,16 +406,28 @@ def generate_sql(
         # Close CASE statement
         sql.append(f" END AS {var}")
 
-    # Add model formula
+    # Add model formula (score)
     sql.extend(
-        [" FROM ", source_table, ")", ", b as (", "SELECT a.*", f", 1 / (1 + EXP(-({intercept}"]
+        [" FROM ", source_table, ")", ", b as (", "SELECT a.*", f", {base_scorecard_points} + round(-(", f"{intercept}"]
     )
 
-    # Add feature coefficients
+    # Add feature coefficients (score)
     for idx, feature in enumerate(feature_names):
         sql.append(f" + ({coef[idx]} * a.{feature})")
 
-    # Finish query
+    # Finish query (default probability)
+    sql.extend([f") * {factor} + {offset})::INTEGER as score"])
+
+    # Add model formula (default probability)
+    sql.extend(
+        [f", 1 / (1 + EXP(-({intercept}"]
+    )
+
+    # Add feature coefficients (default probability)
+    for idx, feature in enumerate(feature_names):
+        sql.append(f" + ({coef[idx]} * a.{feature})")
+
+    # Finish query (default probability)
     sql.extend(["))) as PD", " FROM a) ", "SELECT * FROM b"])
 
     return "".join(sql)

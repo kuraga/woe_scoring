@@ -737,13 +737,22 @@ class CreateModel(BaseEstimator, TransformerMixin):
     def predict(self, data: pd.DataFrame) -> np.ndarray:
         return self.model.predict(data)
 
-    def generate_sql(self, encoder, source_table: str = "feature_store") -> str:
+    def generate_sql(self,
+        encoder,
+        source_table: str = 'feature_store',
+        base_scorecard_points: int = 444,
+        odds: int = 10,
+        points_to_double_odds: int = 69
+    ) -> str:
         return generate_sql(
             encoder=encoder,
             feature_names=self.feature_names_,
             coef=self.coef_,
             intercept=self.intercept_,
             source_table=source_table,
+            base_scorecard_points=base_scorecard_points,
+            odds=odds,
+            points_to_double_odds=points_to_double_odds,
         )
 
     def save_scorecard(
