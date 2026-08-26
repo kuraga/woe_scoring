@@ -15,7 +15,8 @@ class TestSimpleTransformer(unittest.TestCase):
         # Create only numeric features to avoid type issues
         self.X = pd.DataFrame({
             'numeric1': np.random.normal(0, 1, n_samples),
-            'numeric2': np.random.uniform(-5, 5, n_samples)
+            'numeric2': np.random.uniform(-5, 5, n_samples),
+            'numeric3': [ 3.141 ] * n_samples
         })
 
         # Create a target variable with binary outcome (0 or 1)

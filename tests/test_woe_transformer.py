@@ -17,8 +17,10 @@ class TestWOETransformer(unittest.TestCase):
         self.X = pd.DataFrame({
             'numeric1': np.random.normal(0, 1, n_samples),
             'numeric2': np.random.uniform(-5, 5, n_samples),
+            'numeric3': [ 3.141 ] * n_samples,
             'categorical1': np.random.choice(['A', 'B', 'C', 'D'], n_samples),
-            'categorical2': np.random.choice(['X', 'Y', 'Z'], n_samples)
+            'categorical2': np.random.choice(['X', 'Y', 'Z'], n_samples),
+            'categorical3': ['Y'] * n_samples
         })
 
         # Create a target variable with binary outcome (0 or 1)
@@ -52,8 +54,8 @@ class TestWOETransformer(unittest.TestCase):
 
         # Setup the transformer with mock attributes
         self.transformer.feature_names = self.X.columns.tolist()
-        self.transformer.num_features = ['numeric1', 'numeric2']
-        self.transformer.cat_features = ['categorical1', 'categorical2']
+        self.transformer.num_features = ['numeric1', 'numeric2', 'numeric3']
+        self.transformer.cat_features = ['categorical1', 'categorical2', 'categorical3']
         self.transformer.woe_iv_dict = []
         self.transformer.classes_ = np.array([0, 1])
 
@@ -66,6 +68,7 @@ class TestWOETransformer(unittest.TestCase):
         detected_cat_features = self.transformer.cat_features
         self.assertIn('categorical1', detected_cat_features)
         self.assertIn('categorical2', detected_cat_features)
+        self.assertIn('categorical3', detected_cat_features)
 
         # Check if feature names are set
         self.assertTrue(len(self.transformer.feature_names) > 0)
@@ -73,6 +76,7 @@ class TestWOETransformer(unittest.TestCase):
         # Check numeric features
         self.assertIn('numeric1', self.transformer.num_features)
         self.assertIn('numeric2', self.transformer.num_features)
+        self.assertIn('numeric3', self.transformer.num_features)
 
     def test_transform(self):
         """Test the transform method of WOETransformer"""
@@ -199,8 +203,10 @@ class TestWOETransformer(unittest.TestCase):
         test_data = pd.DataFrame({
             'numeric1': [0.5, -0.5],
             'numeric2': [2.0, -2.0],
+            'numeric3': [-1.0, 4.0],
             'categorical1': ['A', 'E'],  # 'E' is a new category
-            'categorical2': ['X', 'W']   # 'W' is a new category
+            'categorical2': ['X', 'W'],  # 'W' is a new category
+            'categorical3': ['Y', 'Z']   # 'Z' is a new category
         })
 
         # Create expected transformed output
