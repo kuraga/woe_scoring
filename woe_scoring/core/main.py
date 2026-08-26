@@ -491,11 +491,12 @@ class CreateModel(BaseEstimator, TransformerMixin):
     supporting multiple selection techniques and model types.
 
     Args:
-        selection_method (str): Feature selection method: 'rfe', 'sfs', 'iv' or 'vif'. Defaults to 'rfe'.
+        selection_method (str): Feature selection method: 'rfe', 'sfs', 'iv', 'vif' or 'dummy'. Defaults to 'rfe'.
             - 'rfe': Recursive Feature Elimination
             - 'sfs': Sequential Feature Selection
             - 'iv': Information Value based selection
             - 'vif': Variance Inflation Factor for removing multicollinearity
+            - 'dummy': all features selector
         model_type (str): Model type: 'sklearn' or 'statsmodel'. Defaults to 'sklearn'.
         max_vars (int, float, None): Maximum number of features to select. Defaults to None.
             If float < 1, interpreted as a percentage of total features.

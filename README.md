@@ -142,7 +142,7 @@ The `CreateModel` class combines feature selection, model training, and model ev
 
 ```python
 CreateModel(
-    selection_method='rfe',    # Feature selection method ('rfe', 'sfs', 'iv', 'vif')
+    selection_method='rfe',    # Feature selection method ('rfe', 'sfs', 'iv', 'vif' or 'dummy')
     model_type='sklearn',      # Model implementation ('sklearn', 'statsmodel')
     max_vars=None,             # Maximum number of features to select
     special_cols=None,         # Columns to include as-is

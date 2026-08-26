@@ -17,14 +17,15 @@ class FeatureSelector:
 
     This class provides a unified interface for different feature selection strategies
     including recursive feature elimination (RFE), sequential feature selection (SFS),
-    information value (IV), and Variance Inflation Factor (VIF).
+    information value (IV), Variance Inflation Factor (VIF) and dummy selection.
 
     Args:
-        selection_type (str): Feature selection algorithm to use: 'rfe', 'sfs', 'iv', or 'vif'.
+        selection_type (str): Feature selection algorithm to use: 'rfe', 'sfs', 'iv', 'vif' or 'dummy'.
             - 'rfe': Recursive Feature Elimination with cross-validation
             - 'sfs': Sequential Feature Selection (forward or backward)
             - 'iv': Information Value based selection
             - 'vif': Variance Inflation Factor for removing multicollinearity
+            - 'dummy': all features selector
         random_state (int): Random seed for reproducibility.
         class_weight (str): Class weights strategy for imbalanced data ('balanced' or None).
         cv (int): Number of cross-validation folds.
@@ -82,7 +83,7 @@ class FeatureSelector:
         Returns the appropriate feature selection function based on selection_type.
 
         Args:
-            selection_type: Type of feature selection ('rfe', 'sfs', 'iv', or 'vif')
+            selection_type: Type of feature selection ('rfe', 'sfs', 'iv', 'vif' or 'dummy')
 
         Returns:
             Function that implements the selected feature selection method
@@ -94,7 +95,8 @@ class FeatureSelector:
             'rfe': self._select_by_rfe,
             'sfs': self._select_by_sfs,
             'iv': self._select_by_iv,
-            'vif': self._select_by_vif
+            'vif': self._select_by_vif,
+            'dummy': self._select_dummy
         }
 
         if selection_type in selection_methods:
@@ -309,3 +311,25 @@ class FeatureSelector:
 
         # Extract selected feature names
         return list(np.array(feature_names)[selector.get_support()])
+
+
+    def _select_dummy(self, data: pd.DataFrame, target: Union[pd.Series, np.ndarray], feature_names: List[str]) -> List[str]:
+        """
+        Selects all features.
+
+        Args:
+            data: Input dataset containing features
+            target: Target variable (not used but kept for consistency)
+            feature_names: List of feature names to consider
+
+        Returns:
+            List of selected (all) feature names
+        """
+        # Handle empty feature list
+        if not feature_names:
+            return []
+
+        # Make a copy of the list to avoid modifying the original
+        selected_features = list(feature_names)
+        
+        return selected_features
