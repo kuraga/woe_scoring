@@ -205,7 +205,14 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         special_cols = self.special_cols or []
         cat_features = self.cat_features or []
 
+        if len(data) == 0:
+            raise ValueError('No data to use')
+        if len(target) == 0:
+            raise ValueError('No classes to use')
+
         data, self.feature_names = prepare_data(data=data, special_cols=special_cols)
+        if len(self.feature_names) == 0:
+            raise RuntimeError('No features have been selected')
 
         if len(cat_features) == 0:
             cat_features = find_cat_features(
@@ -449,9 +456,14 @@ class WOETransformer(BaseEstimator, TransformerMixin):
             None
         """
 
-        data, self.feature_names = prepare_data(
-            data=data, special_cols=self.special_cols
-        )
+        if len(data) == 0:
+            raise ValueError('No data to use')
+        if len(target) == 0:
+            raise ValueError('No classes to use')
+
+        data, self.feature_names = prepare_data(data=data, special_cols=self.special_cols)
+        if len(self.feature_names) == 0:
+            raise RuntimeError('No features have been selected')
 
         # Ensure target is numpy array for consistency
         target_values = target.values if hasattr(target, "values") else np.array(target)
@@ -585,6 +597,11 @@ class CreateModel(BaseEstimator, TransformerMixin):
         special_cols = self.special_cols or []
         unused_cols = self.unused_cols or []
 
+        if len(data) == 0:
+            raise ValueError('No data to use')
+        if len(target) == 0 or target.nunique() == 0:
+            raise ValueError('No classes to use')
+
         # Prepare data and filter features
         data, self.feature_names_ = prepare_data(data=data, special_cols=special_cols)
 
@@ -593,6 +610,9 @@ class CreateModel(BaseEstimator, TransformerMixin):
             self.feature_names_ = [
                 f for f in self.feature_names_ if f not in unused_cols
             ]
+
+        if len(self.feature_names_) == 0:
+            raise ValueError('No features to use')
 
         # Calculate max_vars if it's a ratio
         if self.max_vars is not None and self.max_vars < 1:
@@ -649,6 +669,9 @@ class CreateModel(BaseEstimator, TransformerMixin):
             corr_threshold=self.corr_threshold,
         )
 
+        if len(selected_features) == 0:
+            raise RuntimeError('No features have been selected')
+
         # Initialize model
         selected_model = Model(
             model_type=self.model_type,
@@ -676,7 +699,7 @@ class CreateModel(BaseEstimator, TransformerMixin):
             self.feature_names_ = [
                 f for f in self.feature_names_ if f not in bad_features
             ]
-            if not self.feature_names_:  # Prevent empty feature list
+            if len(self.feature_names_) == 0:  # Prevent empty feature list
                 break
 
             selected_features = feature_selector.select(
@@ -688,6 +711,9 @@ class CreateModel(BaseEstimator, TransformerMixin):
                 features_gini_scores=self.features_gini_scores,
                 corr_threshold=self.corr_threshold,
             )
+
+            if len(selected_features) == 0:  # Prevent empty feature list
+                break
 
             self.model = selected_model.get_model(data[selected_features], target)
 
