@@ -93,7 +93,6 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         max_generated_features: int = 20,
         random_state: Optional[int] = None,
 ):
-        self.classes_ = None
         self.max_bins = max_bins
         self.min_pct_group = min_pct_group
         self.cat_features = cat_features
@@ -207,7 +206,6 @@ class WOETransformer(BaseEstimator, TransformerMixin):
         cat_features = self.cat_features or []
 
         data, self.feature_names = prepare_data(data=data, special_cols=special_cols)
-        self.classes_ = unique_labels(target)
 
         if len(cat_features) == 0:
             cat_features = find_cat_features(

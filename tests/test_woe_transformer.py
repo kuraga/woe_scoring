@@ -57,7 +57,6 @@ class TestWOETransformer(unittest.TestCase):
         self.transformer.num_features = ['numeric1', 'numeric2', 'numeric3']
         self.transformer.cat_features = ['categorical1', 'categorical2', 'categorical3']
         self.transformer.woe_iv_dict = []
-        self.transformer.classes_ = np.array([0, 1])
 
     def test_fit(self):
         """Test the fit method of WOETransformer"""
